@@ -1,0 +1,21 @@
+# Build outputs
+bin/
+build/
+dist/
+*.exe
+*.dll
+*.o
+*.obj
+*.res
+*.log
+
+# IDE & Editor files
+.vscode/
+.vs/
+.idea/
+*.user
+*.suo
+
+# OS temporary files
+Thumbs.db
+Desktop.ini
