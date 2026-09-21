@@ -9,7 +9,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <setupapi.h>
+extern "C" {
 #include <hidsdi.h>
+}
 #include <strsafe.h>
 #include <dbt.h>
 #include <initguid.h>
@@ -60,7 +62,7 @@ static BYTE g_osdAlpha = 0;
 
 static UINT g_uTaskbarRestartMsg = 0;
 static const WCHAR* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const WCHAR* APP_NAME = L"rapoo-tray";
+static const WCHAR* APP_NAME = L"VT3S";
 
 static void UpdateTrayTooltip();
 static void UpdateTrayIcon(int battery);
@@ -128,20 +130,22 @@ static int GetTrayIconSize(HWND hWnd) {
     return sz;
 }
 
-// Generate unified Win11 / Smartphone style battery icon:
-// Emerald Green (>20%), Warm Amber (11-20%), Critical Red (<=10%)
-// Solid fill gauge decreases horizontally as battery drops, with dynamic contrast numbers inside
+// Generate Win11-style slim battery icon.
+// Rendered at 4x supersampling then box-downsampled, so edges and digits
+// come out anti-aliased instead of fat/pixelated in the tray.
 static HICON CreateBatteryIcon(int battery) {
     int size = GetTrayIconSize(g_hMainWnd);
     if (size <= 0) size = 16;
+    const int SS = 4;
+    const int W = size * SS;
 
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
 
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = size;
-    bmi.bmiHeader.biHeight = -size; // Top-down DIB
+    bmi.bmiHeader.biWidth = W;
+    bmi.bmiHeader.biHeight = -W; // Top-down DIB
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -154,202 +158,197 @@ static HICON CreateBatteryIcon(int battery) {
         return NULL;
     }
 
-    uint32_t* pPixels = (uint32_t*)pvBits;
-    memset(pPixels, 0, size * size * sizeof(uint32_t));
+    uint32_t* hi = (uint32_t*)pvBits;
+    memset(hi, 0, W * W * sizeof(uint32_t));
 
-    int pad_x = 0;
-    int pad_y = (size < 20) ? 1 : 2;
-    int tip_w = (size < 20) ? 2 : 3;
-    int tip_h = (size < 20) ? 6 : (size / 3);
-    int tip_y = (size - tip_h) / 2;
-
-    int body_x0 = pad_x;
-    int body_y0 = pad_y;
-    int body_x1 = size - 1 - tip_w;
-    int body_y1 = size - 1 - pad_y;
-
-    int tip_x0 = body_x1 + 1;
-    int tip_x1 = size - 1;
-    int tip_y0 = tip_y;
-    int tip_y1 = tip_y + tip_h - 1;
-
-    uint32_t c_fill;
-    uint32_t c_frame;
-    uint32_t c_empty;
-    uint32_t c_text_fill;
-    uint32_t c_text_empty;
-
+    uint32_t c_fill, c_frame, c_empty, c_text_fill, c_text_empty;
+    // Empty track is FULLY TRANSPARENT (taskbar shows through); digits use
+    // ONE soft dark-gray color everywhere.
+    const uint32_t c_digit = 0xFF2B2B2B; // soft black
     if (battery > 20) {
-        // Level 1: Vibrant Emerald Green (> 20%)
-        c_fill        = 0xFF2DD773; // Emerald Green (RGB: 45, 215, 115)
-        c_frame       = 0xFFB4DCC8; // Soft Mint/Silver frame
-        c_empty       = 0xFF18261E; // Deep Forest Dark Track
-        c_text_fill   = 0xFF0C1810; // High-contrast deep dark text on green fill
-        c_text_empty  = 0xFF2DD773; // Vibrant green text on empty dark track
+        c_fill        = 0xFF2DD773; // Emerald green
+        c_frame       = 0xFFB4DCC8;
+        c_empty       = 0x00000000; // transparent track
+        c_text_fill   = c_digit;
+        c_text_empty  = c_digit;
     } else if (battery > 10) {
-        // Level 2: Battery Saver Warm Amber (11% ~ 20%)
-        c_fill        = 0xFFFFB923;
+        c_fill        = 0xFFFFB923; // Warm amber (11% ~ 20%)
         c_frame       = 0xFFDC9E28;
-        c_empty       = 0xFF352B18;
-        c_text_fill   = 0xFF18120A;
-        c_text_empty  = 0xFFFFCA35;
+        c_empty       = 0x00000000; // transparent track
+        c_text_fill   = c_digit;
+        c_text_empty  = c_digit;
     } else {
-        // Level 3: Critical Warning Red (<= 10%)
-        c_fill        = 0xFFFF4646;
+        c_fill        = 0xFFFF4646; // Critical red (<= 10%)
         c_frame       = 0xFFDC4646;
-        c_empty       = 0xFF351A1A;
-        c_text_fill   = 0xFFFFFFFF;
-        c_text_empty  = 0xFFFF5A5A;
+        c_empty       = 0x00000000; // transparent track
+        c_text_fill   = c_digit;
+        c_text_empty  = c_digit;
     }
 
-    // Draw outer frame
-    for (int x = body_x0; x <= body_x1; ++x) {
-        PutPixelARGB(pPixels, size, x, body_y0, c_frame);
-        PutPixelARGB(pPixels, size, x, body_y1, c_frame);
-    }
-    for (int y = body_y0; y <= body_y1; ++y) {
-        PutPixelARGB(pPixels, size, body_x0, y, c_frame);
-        PutPixelARGB(pPixels, size, body_x1, y, c_frame);
-    }
-    // Round corners
-    PutPixelARGB(pPixels, size, body_x0, body_y0, 0);
-    PutPixelARGB(pPixels, size, body_x0, body_y1, 0);
-    PutPixelARGB(pPixels, size, body_x1, body_y0, 0);
-    PutPixelARGB(pPixels, size, body_x1, body_y1, 0);
+    // --- hi-res drawing helpers ---
+    auto HiPixel = [&](int x, int y, uint32_t col) {
+        if (x >= 0 && x < W && y >= 0 && y < W) hi[y * W + x] = col;
+    };
+    auto FillRoundRect = [&](int x0, int y0, int x1, int y1, uint32_t col, int rad) {
+        if (rad > (x1 - x0) / 2) rad = (x1 - x0) / 2;
+        if (rad > (y1 - y0) / 2) rad = (y1 - y0) / 2;
+        if (rad < 0) rad = 0;
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                int dx = (x < x0 + rad) ? (x0 + rad - x) : (x > x1 - rad) ? (x - (x1 - rad)) : 0;
+                int dy = (y < y0 + rad) ? (y0 + rad - y) : (y > y1 - rad) ? (y - (y1 - rad)) : 0;
+                if (dx * dx + dy * dy <= rad * rad) HiPixel(x, y, col);
+            }
+    };
 
-    for (int x = tip_x0; x <= tip_x1; ++x) {
-        for (int y = tip_y0; y <= tip_y1; ++y) {
-            PutPixelARGB(pPixels, size, x, y, c_frame);
-        }
+    // --- slim battery geometry (hi-res units) ---
+    int pad_y  = ((size < 20) ? 1 : 2) * SS;
+    int tip_w  = 2 * SS;                  // thin tip -> longer, slimmer body
+    int tip_h  = W * 34 / 100;
+    int tip_y0 = (W - tip_h) / 2;
+    int tip_y1 = tip_y0 + tip_h - 1;
+
+    int body_x0 = 0;
+    int body_y0 = pad_y;
+    int body_x1 = W - 1 - tip_w;
+    int body_y1 = W - 1 - pad_y;
+    int radius  = 3 * SS;
+    int frame_t = SS + SS / 2;            // ~1.5px frame at final size
+
+    FillRoundRect(body_x0, body_y0, body_x1, body_y1, c_frame, radius);
+    FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
+                  body_x1 - frame_t, body_y1 - frame_t, c_empty, radius - frame_t);
+    FillRoundRect(body_x1 + 1, tip_y0, W - 1, tip_y1, c_frame, SS);
+
+    int in_x0 = body_x0 + frame_t;
+    int in_x1 = body_x1 - frame_t;
+    int in_y0 = body_y0 + frame_t;
+    int in_w  = in_x1 - in_x0 + 1;
+    int in_h  = (body_y1 - frame_t) - in_y0 + 1;
+
+    int fill_w = (in_w * battery + 50) / 100;
+    if (fill_w < SS && battery > 0) fill_w = SS;
+    if (fill_w > in_w) fill_w = in_w;
+    int fill_end_x = in_x0 + fill_w; // hi-res gauge boundary (for text contrast)
+
+    if (fill_w > 0) {
+        FillRoundRect(in_x0, in_y0, in_x0 + fill_w - 1, body_y1 - frame_t,
+                      c_fill, radius - frame_t);
     }
 
-    // Fill empty track background
-    for (int x = body_x0 + 1; x < body_x1; ++x) {
-        for (int y = body_y0 + 1; y < body_y1; ++y) {
-            PutPixelARGB(pPixels, size, x, y, c_empty);
-        }
-    }
+    // --- digits: scale font to fill the battery interior so numbers stay readable ---
+    auto DrawDigitScaled = [&](const uint16_t* rows, int fw, int fh,
+                               int x0, int y0, int scale) {
+        for (int r = 0; r < fh; ++r)
+            for (int c = 0; c < fw; ++c) {
+                if (!((rows[r] >> (fw - 1 - c)) & 1)) continue;
+                for (int dy = 0; dy < scale; ++dy)
+                    for (int dx = 0; dx < scale; ++dx) {
+                        int px = x0 + c * scale + dx;
+                        int py = y0 + r * scale + dy;
+                        HiPixel(px, py, (px < fill_end_x) ? c_text_fill : c_text_empty);
+                    }
+            }
+    };
 
-    // Fill gauge length (gets shorter as battery decreases!)
-    int inner_w = (body_x1 - 1) - (body_x0 + 1) + 1;
-    int gauge_w = (inner_w * battery + 50) / 100;
-    if (gauge_w < 1 && battery > 0) gauge_w = 1;
-    if (gauge_w > inner_w) gauge_w = inner_w;
-    int fill_end_x = body_x0 + 1 + gauge_w;
-
-    for (int x = body_x0 + 1; x < fill_end_x; ++x) {
-        for (int y = body_y0 + 1; y < body_y1; ++y) {
-            PutPixelARGB(pPixels, size, x, y, c_fill);
-        }
-    }
-
-    // Render digits inside with per-pixel dynamic contrast
     char s[8];
     snprintf(s, sizeof(s), "%d", battery);
     int len = (int)strlen(s);
-    int inner_h = (body_y1 - 1) - (body_y0 + 1) + 1;
 
-    if (size < 20) {
-        // 16x16: 3x5 font
-        if (battery == 100) {
-            int start_x = body_x0 + 1 + (inner_w - 9) / 2;
-            int start_y = body_y0 + 1 + (inner_h - 5) / 2;
-            for (int r = 0; r < 5; ++r) {
-                uint32_t col = (start_x < fill_end_x) ? c_text_fill : c_text_empty;
-                PutPixelARGB(pPixels, size, start_x, start_y + r, col);
-            }
-            for (int r = 0; r < 5; ++r) {
-                uint8_t bits = FONT_3X5[0][r];
-                for (int c = 0; c < 3; ++c) {
-                    if ((bits >> (2 - c)) & 1) {
-                        int px = start_x + 2 + c;
-                        uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                        PutPixelARGB(pPixels, size, px, start_y + r, col);
-                    }
-                }
-            }
-            for (int r = 0; r < 5; ++r) {
-                uint8_t bits = FONT_3X5[0][r];
-                for (int c = 0; c < 3; ++c) {
-                    if ((bits >> (2 - c)) & 1) {
-                        int px = start_x + 6 + c;
-                        uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                        PutPixelARGB(pPixels, size, px, start_y + r, col);
-                    }
-                }
-            }
+    {
+        // font metrics (font pixels)
+        const int fw = (size < 20) ? 3 : 5;
+        const int fh = (size < 20) ? 5 : 9;
+
+        int gap_fp = (len == 1) ? 0 : 1;                 // 1 font-pixel gap between digits
+        int text_w_fp = len * fw + (len - 1) * gap_fp;
+
+        // scale so digit height fills inner height; shrink if width overflows
+        int scale = in_h / fh;
+        if (scale < 1) scale = 1;
+        while (scale > 1 && text_w_fp * scale > in_w) --scale;
+
+        int text_h = fh * scale;
+        int text_w = text_w_fp * scale;
+        int sx = in_x0 + (in_w - text_w) / 2;
+        int sy = in_y0 + (in_h - text_h) / 2;
+
+        if (battery == 100 && size < 20) {
+            // "00" with a leading 1 bar, 3x5 font
+            int cur = sx;
+            for (int t = 0; t < scale; ++t)
+                for (int r = 0; r < text_h; ++r)
+                    HiPixel(cur + t, sy + r,
+                            (cur + t < fill_end_x) ? c_text_fill : c_text_empty);
+            cur += scale + gap_fp * scale;
+            uint16_t rows5[5];
+            for (int r = 0; r < 5; ++r) rows5[r] = FONT_3X5[0][r];
+            DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
+            cur += 3 * scale + gap_fp * scale;
+            DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
+        } else if (battery == 100) {
+            // "00" with a leading 1 bar, 4x9 font
+            int cur = sx;
+            for (int t = 0; t < 2 * scale; ++t)
+                for (int r = 0; r < text_h; ++r)
+                    HiPixel(cur + t, sy + r,
+                            (cur + t < fill_end_x) ? c_text_fill : c_text_empty);
+            cur += 2 * scale + gap_fp * scale;
+            uint16_t rows9[9];
+            for (int r = 0; r < 9; ++r) rows9[r] = FONT_4X9_0[r];
+            DrawDigitScaled(rows9, 4, 9, cur, sy, scale);
+            cur += 4 * scale + gap_fp * scale;
+            DrawDigitScaled(rows9, 4, 9, cur, sy, scale);
         } else {
-            int total_w = len * 3 + (len - 1);
-            int start_x = body_x0 + 1 + (inner_w - total_w) / 2;
-            int start_y = body_y0 + 1 + (inner_h - 5) / 2;
-            int cur_x = start_x;
+            int cur = sx;
             for (int i = 0; i < len; ++i) {
                 int d = s[i] - '0';
-                for (int r = 0; r < 5; ++r) {
-                    uint8_t bits = FONT_3X5[d][r];
-                    for (int c = 0; c < 3; ++c) {
-                        if ((bits >> (2 - c)) & 1) {
-                            int px = cur_x + c;
-                            uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                            PutPixelARGB(pPixels, size, px, start_y + r, col);
-                        }
-                    }
+                if (size < 20) {
+                    uint16_t rows5[5];
+                    for (int r = 0; r < 5; ++r) rows5[r] = FONT_3X5[d][r];
+                    DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
+                } else {
+                    DrawDigitScaled(FONT_5X9[d], 5, 9, cur, sy, scale);
                 }
-                cur_x += 4;
+                cur += fw * scale + gap_fp * scale;
             }
         }
-    } else {
-        // 20x20, 24x24, 32x32: 5x9 font
-        if (battery == 100) {
-            int start_x = body_x0 + 1 + (inner_w - 12) / 2;
-            int start_y = body_y0 + 1 + (inner_h - 9) / 2;
-            for (int r = 0; r < 9; ++r) {
-                uint32_t col0 = (start_x < fill_end_x) ? c_text_fill : c_text_empty;
-                uint32_t col1 = (start_x + 1 < fill_end_x) ? c_text_fill : c_text_empty;
-                PutPixelARGB(pPixels, size, start_x, start_y + r, col0);
-                PutPixelARGB(pPixels, size, start_x + 1, start_y + r, col1);
-            }
-            for (int r = 0; r < 9; ++r) {
-                uint8_t bits = FONT_4X9_0[r];
-                for (int c = 0; c < 4; ++c) {
-                    if ((bits >> (3 - c)) & 1) {
-                        int px = start_x + 3 + c;
-                        uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                        PutPixelARGB(pPixels, size, px, start_y + r, col);
-                    }
+    }
+
+    // --- box downsample SSx -> 1x (alpha-weighted average = anti-aliasing) ---
+    BITMAPINFO bomi = {0};
+    bomi.bmiHeader = bmi.bmiHeader;
+    bomi.bmiHeader.biWidth = size;
+    bomi.bmiHeader.biHeight = -size;
+    void* pvOut = NULL;
+    HBITMAP hbmOut = CreateDIBSection(hdcMem, &bomi, DIB_RGB_COLORS, &pvOut, NULL, 0);
+    if (!hbmOut || !pvOut) {
+        DeleteObject(hbmColor);
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+        return NULL;
+    }
+    uint32_t* out = (uint32_t*)pvOut;
+    const int SS2 = SS * SS;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            uint32_t sumA = 0, sumR = 0, sumG = 0, sumB = 0;
+            for (int sy = 0; sy < SS; ++sy) {
+                const uint32_t* row = hi + (y * SS + sy) * W + x * SS;
+                for (int sx = 0; sx < SS; ++sx) {
+                    uint32_t c = row[sx];
+                    uint32_t a = (c >> 24) & 0xFF;
+                    sumA += a;
+                    sumR += ((c >> 16) & 0xFF) * a;
+                    sumG += ((c >> 8) & 0xFF) * a;
+                    sumB += (c & 0xFF) * a;
                 }
             }
-            for (int r = 0; r < 9; ++r) {
-                uint8_t bits = FONT_4X9_0[r];
-                for (int c = 0; c < 4; ++c) {
-                    if ((bits >> (3 - c)) & 1) {
-                        int px = start_x + 8 + c;
-                        uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                        PutPixelARGB(pPixels, size, px, start_y + r, col);
-                    }
-                }
-            }
-        } else {
-            int font_w = 5;
-            int space = (len == 1) ? 0 : 2;
-            int total_w = len * font_w + (len - 1) * space;
-            int start_x = body_x0 + 1 + (inner_w - total_w) / 2;
-            int start_y = body_y0 + 1 + (inner_h - 9) / 2;
-            int cur_x = start_x;
-            for (int i = 0; i < len; ++i) {
-                int d = s[i] - '0';
-                for (int r = 0; r < 9; ++r) {
-                    uint16_t bits = FONT_5X9[d][r];
-                    for (int c = 0; c < 5; ++c) {
-                        if ((bits >> (4 - c)) & 1) {
-                            int px = cur_x + c;
-                            uint32_t col = (px < fill_end_x) ? c_text_fill : c_text_empty;
-                            PutPixelARGB(pPixels, size, px, start_y + r, col);
-                        }
-                    }
-                }
-                cur_x += font_w + space;
-            }
+            uint32_t a = sumA / SS2;
+            uint32_t r = sumA ? sumR / sumA : 0;
+            uint32_t g = sumA ? sumG / sumA : 0;
+            uint32_t b = sumA ? sumB / sumA : 0;
+            out[y * size + x] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
 
@@ -357,11 +356,12 @@ static HICON CreateBatteryIcon(int battery) {
 
     ICONINFO ii = {0};
     ii.fIcon = TRUE;
-    ii.hbmColor = hbmColor;
+    ii.hbmColor = hbmOut;
     ii.hbmMask = hbmMask;
     HICON hIcon = CreateIconIndirect(&ii);
 
     DeleteObject(hbmColor);
+    DeleteObject(hbmOut);
     DeleteObject(hbmMask);
     DeleteDC(hdcMem);
     ReleaseDC(NULL, hdcScreen);
@@ -373,7 +373,7 @@ static void UpdateTrayTooltip() {
     StringCchPrintfW(
         g_nid.szTip,
         ARRAYSIZE(g_nid.szTip),
-        L"rapoo-tray\n电量: %d%%\nDPI: %d (第 %d 档)",
+        L"VT3S\n电量: %d%%\nDPI: %d (第 %d 档)",
         g_battery,
         g_dpiX,
         g_dpiLevel
@@ -513,7 +513,7 @@ static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
     SetTimer(g_hOsdWnd, TIMER_OSD_HIDE, 1400, NULL);
 }
 
-// Find Rapoo col09 device path dynamically (supports wireless dongle pid_1460 and wired USB pid_4660)
+// Find Rapoo col09 device path dynamically (supports wireless dongle pid_1460, wired USB pid_4660 and VT3s pid_1411)
 static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
@@ -540,7 +540,7 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen) {
             _wcslwr_s(lowerPath, MAX_PATH);
 
             if (wcsstr(lowerPath, L"vid_24ae") && 
-               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660")) && 
+               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1411")) && 
                 wcsstr(lowerPath, L"col09")) {
                 StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
                 found = true;
@@ -688,7 +688,7 @@ static void ShowContextMenu(HWND hWnd) {
     WCHAR bufBat[64];
     WCHAR bufDpi[64];
 
-    StringCchPrintfW(bufHeader, 64, L"rapoo-tray");
+    StringCchPrintfW(bufHeader, 64, L"VT3S");
     StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
     StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
 
@@ -813,7 +813,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     g_hOsdWnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         wcOsd.lpszClassName,
-        L"RapooOSD",
+        L"VT3S",
         WS_POPUP,
         0, 0, 240, 76,
         NULL, NULL, hInstance, NULL

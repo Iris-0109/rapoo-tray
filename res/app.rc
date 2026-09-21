@@ -14,13 +14,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "rapoo-tray"
-            VALUE "FileDescription", "rapoo-tray"
+            VALUE "CompanyName", "VT3S"
+            VALUE "FileDescription", "VT3S"
             VALUE "FileVersion", "1.0.0.0"
-            VALUE "InternalName", "rapoo-tray"
+            VALUE "InternalName", "VT3S"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "rapoo-tray.exe"
-            VALUE "ProductName", "rapoo-tray"
+            VALUE "ProductName", "VT3S"
             VALUE "ProductVersion", "1.0.0.0"
         END
     END
