@@ -11,7 +11,7 @@ echo ========================================================
 where g++ >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [Toolchain] Using MinGW GCC/G++ ...
-    windres -i res\app.rc -o bin\app.o
+    windres --codepage 65001 -I res -i res\app.rc -o bin\app.o
     g++ -O3 -mwindows -municode -s -static src\main.cpp bin\app.o -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -o bin\rapoo-tray.exe
     if exist bin\app.o del bin\app.o
     goto done
@@ -20,7 +20,7 @@ if %ERRORLEVEL% equ 0 (
 where cl >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [Toolchain] Using MSVC CL ...
-    rc /fo bin\app.res res\app.rc
+    rc /c 65001 /fo bin\app.res res\app.rc
     cl /nologo /O2 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN src\main.cpp bin\app.res /Fe:bin\rapoo-tray.exe /link /SUBSYSTEM:WINDOWS setupapi.lib hid.lib user32.lib gdi32.lib shell32.lib advapi32.lib
     if exist bin\app.res del bin\app.res
     if exist main.obj del main.obj

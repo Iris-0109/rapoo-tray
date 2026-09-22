@@ -1,0 +1,51 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows Binaries
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MinGW Toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+
+      - name: Build rapoo-tray.exe (Standalone)
+        shell: msys2 {0}
+        run: |
+          mkdir -p bin
+          windres --codepage 65001 -I res -i res/app.rc -o bin/app.o
+          g++ -O3 -mwindows -municode -s -static src/main.cpp bin/app.o -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -o bin/rapoo-tray.exe
+          rm -f bin/app.o
+
+      - name: Build rapoo-tray-setup.exe (Installer)
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist
+          cd installer
+          windres --codepage 65001 -i installer.rc -o installer.o -O coff
+          g++ -O3 -mwindows -municode -s -static installer.cpp installer.o -lole32 -lshell32 -luser32 -lgdi32 -ladvapi32 -luuid -o ../dist/rapoo-tray-setup.exe
+          rm -f installer.o
+
+      - name: Create GitHub Release & Upload Assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            bin/rapoo-tray.exe
+            dist/rapoo-tray-setup.exe
+          generate_release_notes: true

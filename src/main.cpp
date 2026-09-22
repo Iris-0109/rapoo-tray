@@ -56,13 +56,15 @@ static volatile LONG g_dpiLevel = 1;
 static volatile LONG g_dpiX = 1200;
 static volatile LONG g_dpiY = 1200;
 
-static WCHAR g_osdTextLine1[64] = L"DPI 1200";
-static WCHAR g_osdTextLine2[64] = L"第 2 档  |  电量 100%";
+static WCHAR g_osdTextLine1[64] = L"第 1 档  DPI 1200";
+static WCHAR g_osdTextLine2[64] = L"雷柏 VT7  |  电量 100%";
 static BYTE g_osdAlpha = 0;
 
 static UINT g_uTaskbarRestartMsg = 0;
 static const WCHAR* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const WCHAR* APP_NAME = L"VT3S";
+static const WCHAR* APP_NAME = L"rapoo-tray";
+static WCHAR g_detectedModel[64] = L"雷柏无线鼠标";
+static volatile bool g_deviceConnected = false;
 
 static void UpdateTrayTooltip();
 static void UpdateTrayIcon(int battery);
@@ -130,6 +132,16 @@ static int GetTrayIconSize(HWND hWnd) {
     return sz;
 }
 
+static bool IsSystemDarkTheme() {
+    DWORD val = 0, size = sizeof(val);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"SystemUsesLightTheme", RRF_RT_REG_DWORD, NULL, &val, &size) == ERROR_SUCCESS) {
+        return (val == 0);
+    }
+    return true; // Default to dark theme
+}
+
 // Generate Win11-style slim battery icon.
 // Rendered at 4x supersampling then box-downsampled, so edges and digits
 // come out anti-aliased instead of fat/pixelated in the tray.
@@ -161,29 +173,13 @@ static HICON CreateBatteryIcon(int battery) {
     uint32_t* hi = (uint32_t*)pvBits;
     memset(hi, 0, W * W * sizeof(uint32_t));
 
-    uint32_t c_fill, c_frame, c_empty, c_text_fill, c_text_empty;
-    // Empty track is FULLY TRANSPARENT (taskbar shows through); digits use
-    // ONE soft dark-gray color everywhere.
-    const uint32_t c_digit = 0xFF2B2B2B; // soft black
-    if (battery > 20) {
-        c_fill        = 0xFF2DD773; // Emerald green
-        c_frame       = 0xFFB4DCC8;
-        c_empty       = 0x00000000; // transparent track
-        c_text_fill   = c_digit;
-        c_text_empty  = c_digit;
-    } else if (battery > 10) {
-        c_fill        = 0xFFFFB923; // Warm amber (11% ~ 20%)
-        c_frame       = 0xFFDC9E28;
-        c_empty       = 0x00000000; // transparent track
-        c_text_fill   = c_digit;
-        c_text_empty  = c_digit;
-    } else {
-        c_fill        = 0xFFFF4646; // Critical red (<= 10%)
-        c_frame       = 0xFFDC4646;
-        c_empty       = 0x00000000; // transparent track
-        c_text_fill   = c_digit;
-        c_text_empty  = c_digit;
-    }
+    bool isDark = IsSystemDarkTheme();
+
+    // Solid vibrant emerald green background (always green, no tiered color changes):
+    const uint32_t c_fill  = 0xFF2DD773;
+    const uint32_t c_frame = isDark ? 0xFFFFFFFF : 0xFF1E1E1E;
+    // Unified solid black font
+    const uint32_t c_digit = 0xFF000000;
 
     // --- hi-res drawing helpers ---
     auto HiPixel = [&](int x, int y, uint32_t col) {
@@ -201,55 +197,39 @@ static HICON CreateBatteryIcon(int battery) {
             }
     };
 
-    // --- slim battery geometry (hi-res units) ---
-    int pad_y  = ((size < 20) ? 1 : 2) * SS;
-    int tip_w  = 2 * SS;                  // thin tip -> longer, slimmer body
-    int tip_h  = W * 34 / 100;
-    int tip_y0 = (W - tip_h) / 2;
-    int tip_y1 = tip_y0 + tip_h - 1;
+    // Restored full-size battery geometry:
+    // Strictly aligned to 1x screen pixel boundaries for 100% crisp, razor-sharp edges,
+    // utilizing the full icon area (pad_y=1 for 16x16, filling height 14px and width 16px).
+    int pad_y = (size < 20) ? 1 : ((size <= 24) ? 2 : 3);
+    int tip_w = (size < 20) ? 2 : ((size <= 24) ? 3 : 4);
+    int tip_h = (size < 20) ? 6 : (size / 3);
+    int tip_y = (size - tip_h) / 2;
 
     int body_x0 = 0;
-    int body_y0 = pad_y;
-    int body_x1 = W - 1 - tip_w;
-    int body_y1 = W - 1 - pad_y;
-    int radius  = 3 * SS;
-    int frame_t = SS + SS / 2;            // ~1.5px frame at final size
+    int body_x1 = (size - 1 - tip_w) * SS + (SS - 1);
+    int body_y0 = pad_y * SS;
+    int body_y1 = (size - 1 - pad_y) * SS + (SS - 1);
+
+    int frame_t = 1 * SS; // Exact 1.0 screen pixel border (razor-sharp)
+    int radius  = 2 * SS; // 0.5 screen pixel subtle anti-aliased corner
 
     FillRoundRect(body_x0, body_y0, body_x1, body_y1, c_frame, radius);
+    // Fill entire battery cavity with solid vibrant emerald green:
     FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
-                  body_x1 - frame_t, body_y1 - frame_t, c_empty, radius - frame_t);
-    FillRoundRect(body_x1 + 1, tip_y0, W - 1, tip_y1, c_frame, SS);
+                  body_x1 - frame_t, body_y1 - frame_t, c_fill, (radius > frame_t ? radius - frame_t : 0));
+
+    // Positive terminal tip (fully aligned to screen pixels):
+    int tip_x0 = (size - tip_w) * SS;
+    int tip_x1 = size * SS - 1;
+    int tip_y0 = tip_y * SS;
+    int tip_y1 = (tip_y + tip_h) * SS - 1;
+    FillRoundRect(tip_x0, tip_y0, tip_x1, tip_y1, c_frame, SS);
 
     int in_x0 = body_x0 + frame_t;
     int in_x1 = body_x1 - frame_t;
     int in_y0 = body_y0 + frame_t;
     int in_w  = in_x1 - in_x0 + 1;
     int in_h  = (body_y1 - frame_t) - in_y0 + 1;
-
-    int fill_w = (in_w * battery + 50) / 100;
-    if (fill_w < SS && battery > 0) fill_w = SS;
-    if (fill_w > in_w) fill_w = in_w;
-    int fill_end_x = in_x0 + fill_w; // hi-res gauge boundary (for text contrast)
-
-    if (fill_w > 0) {
-        FillRoundRect(in_x0, in_y0, in_x0 + fill_w - 1, body_y1 - frame_t,
-                      c_fill, radius - frame_t);
-    }
-
-    // --- digits: scale font to fill the battery interior so numbers stay readable ---
-    auto DrawDigitScaled = [&](const uint16_t* rows, int fw, int fh,
-                               int x0, int y0, int scale) {
-        for (int r = 0; r < fh; ++r)
-            for (int c = 0; c < fw; ++c) {
-                if (!((rows[r] >> (fw - 1 - c)) & 1)) continue;
-                for (int dy = 0; dy < scale; ++dy)
-                    for (int dx = 0; dx < scale; ++dx) {
-                        int px = x0 + c * scale + dx;
-                        int py = y0 + r * scale + dy;
-                        HiPixel(px, py, (px < fill_end_x) ? c_text_fill : c_text_empty);
-                    }
-            }
-    };
 
     char s[8];
     snprintf(s, sizeof(s), "%d", battery);
@@ -260,44 +240,72 @@ static HICON CreateBatteryIcon(int battery) {
         const int fw = (size < 20) ? 3 : 5;
         const int fh = (size < 20) ? 5 : 9;
 
-        int gap_fp = (len == 1) ? 0 : 1;                 // 1 font-pixel gap between digits
-        int text_w_fp = len * fw + (len - 1) * gap_fp;
+        int gap_fp = (len == 1) ? 0 : 1; // 1 font-pixel gap between digits
 
-        // scale so digit height fills inner height; shrink if width overflows
-        int scale = in_h / fh;
+        // Set font height to ~70% of inner cavity height (step up to scale = 6, 7.5px)
+        int target_h = in_h * 70 / 100;
+        int scale = target_h / fh;
         if (scale < 1) scale = 1;
-        while (scale > 1 && text_w_fp * scale > in_w) --scale;
+        int bold_w = 1;
+
+        auto CalcTextWidth = [&](int sc, int bw) -> int {
+            if (battery == 100 && size < 20) {
+                return (sc + bw) + (gap_fp * sc) + 2 * (3 * sc + bw) + (gap_fp * sc);
+            } else if (battery == 100) {
+                return (2 * sc + bw) + (gap_fp * sc) + 2 * (4 * sc + bw) + (gap_fp * sc);
+            } else {
+                return len * (fw * sc + bw) + (len - 1) * (gap_fp * sc);
+            }
+        };
+
+        while (scale > 1 && CalcTextWidth(scale, bold_w) > in_w) {
+            --scale;
+        }
 
         int text_h = fh * scale;
-        int text_w = text_w_fp * scale;
+        int text_w = CalcTextWidth(scale, bold_w);
         int sx = in_x0 + (in_w - text_w) / 2;
         int sy = in_y0 + (in_h - text_h) / 2;
+
+        auto DrawDigitScaled = [&](const uint16_t* rows, int fw, int fh,
+                                   int x0, int y0, int scale) {
+            for (int r = 0; r < fh; ++r) {
+                for (int c = 0; c < fw; ++c) {
+                    if (!((rows[r] >> (fw - 1 - c)) & 1)) continue;
+                    for (int dy = 0; dy < scale; ++dy) {
+                        for (int dx = 0; dx < scale + bold_w; ++dx) {
+                            int px = x0 + c * scale + dx;
+                            int py = y0 + r * scale + dy;
+                            HiPixel(px, py, c_digit);
+                        }
+                    }
+                }
+            }
+        };
 
         if (battery == 100 && size < 20) {
             // "00" with a leading 1 bar, 3x5 font
             int cur = sx;
-            for (int t = 0; t < scale; ++t)
+            for (int t = 0; t < scale + bold_w; ++t)
                 for (int r = 0; r < text_h; ++r)
-                    HiPixel(cur + t, sy + r,
-                            (cur + t < fill_end_x) ? c_text_fill : c_text_empty);
-            cur += scale + gap_fp * scale;
+                    HiPixel(cur + t, sy + r, c_digit);
+            cur += scale + bold_w + gap_fp * scale;
             uint16_t rows5[5];
             for (int r = 0; r < 5; ++r) rows5[r] = FONT_3X5[0][r];
             DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
-            cur += 3 * scale + gap_fp * scale;
+            cur += 3 * scale + bold_w + gap_fp * scale;
             DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
         } else if (battery == 100) {
             // "00" with a leading 1 bar, 4x9 font
             int cur = sx;
-            for (int t = 0; t < 2 * scale; ++t)
+            for (int t = 0; t < 2 * scale + bold_w; ++t)
                 for (int r = 0; r < text_h; ++r)
-                    HiPixel(cur + t, sy + r,
-                            (cur + t < fill_end_x) ? c_text_fill : c_text_empty);
-            cur += 2 * scale + gap_fp * scale;
+                    HiPixel(cur + t, sy + r, c_digit);
+            cur += 2 * scale + bold_w + gap_fp * scale;
             uint16_t rows9[9];
             for (int r = 0; r < 9; ++r) rows9[r] = FONT_4X9_0[r];
             DrawDigitScaled(rows9, 4, 9, cur, sy, scale);
-            cur += 4 * scale + gap_fp * scale;
+            cur += 4 * scale + bold_w + gap_fp * scale;
             DrawDigitScaled(rows9, 4, 9, cur, sy, scale);
         } else {
             int cur = sx;
@@ -310,7 +318,7 @@ static HICON CreateBatteryIcon(int battery) {
                 } else {
                     DrawDigitScaled(FONT_5X9[d], 5, 9, cur, sy, scale);
                 }
-                cur += fw * scale + gap_fp * scale;
+                cur += fw * scale + bold_w + gap_fp * scale;
             }
         }
     }
@@ -338,21 +346,40 @@ static HICON CreateBatteryIcon(int battery) {
                 for (int sx = 0; sx < SS; ++sx) {
                     uint32_t c = row[sx];
                     uint32_t a = (c >> 24) & 0xFF;
-                    sumA += a;
-                    sumR += ((c >> 16) & 0xFF) * a;
-                    sumG += ((c >> 8) & 0xFF) * a;
-                    sumB += (c & 0xFF) * a;
+                    if (a > 0) {
+                        sumA += a;
+                        sumR += (c >> 16) & 0xFF;
+                        sumG += (c >> 8) & 0xFF;
+                        sumB += (c & 0xFF);
+                    }
                 }
             }
             uint32_t a = sumA / SS2;
-            uint32_t r = sumA ? sumR / sumA : 0;
-            uint32_t g = sumA ? sumG / sumA : 0;
-            uint32_t b = sumA ? sumB / sumA : 0;
-            out[y * size + x] = (a << 24) | (r << 16) | (g << 8) | b;
+            if (a < 8) {
+                out[y * size + x] = 0;
+            } else {
+                uint32_t r = sumR / SS2;
+                uint32_t g = sumG / SS2;
+                uint32_t b = sumB / SS2;
+                out[y * size + x] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
         }
     }
 
-    HBITMAP hbmMask = CreateBitmap(size, size, 1, 1, NULL);
+    // Windows monochrome 1bpp mask: 1 = Transparent, 0 = Opaque.
+    // Row width must be WORD (2-byte) aligned.
+    int maskPitch = ((size + 15) / 16) * 2;
+    BYTE maskBits[256] = {0};
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            uint32_t px = out[y * size + x];
+            uint8_t a = (px >> 24) & 0xFF;
+            if (a < 32) {
+                maskBits[y * maskPitch + (x / 8)] |= (1 << (7 - (x % 8)));
+            }
+        }
+    }
+    HBITMAP hbmMask = CreateBitmap(size, size, 1, 1, maskBits);
 
     ICONINFO ii = {0};
     ii.fIcon = TRUE;
@@ -370,14 +397,23 @@ static HICON CreateBatteryIcon(int battery) {
 }
 
 static void UpdateTrayTooltip() {
-    StringCchPrintfW(
-        g_nid.szTip,
-        ARRAYSIZE(g_nid.szTip),
-        L"VT3S\n电量: %d%%\nDPI: %d (第 %d 档)",
-        g_battery,
-        g_dpiX,
-        g_dpiLevel
-    );
+    if (g_deviceConnected) {
+        StringCchPrintfW(
+            g_nid.szTip,
+            ARRAYSIZE(g_nid.szTip),
+            L"%s\n电量: %d%%\nDPI: %d (第 %d 档)",
+            g_detectedModel,
+            g_battery,
+            g_dpiX,
+            g_dpiLevel
+        );
+    } else {
+        StringCchPrintfW(
+            g_nid.szTip,
+            ARRAYSIZE(g_nid.szTip),
+            L"rapoo-tray\n(等待设备连接...)"
+        );
+    }
 }
 
 static void UpdateTrayIcon(int battery) {
@@ -424,9 +460,9 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 
             SetBkMode(memDC, TRANSPARENT);
 
-            // DPI Value (Prominent Bold Font)
+            // Level + DPI Value (Prominent Bold Font)
             HFONT hFontBig = CreateFontW(
-                -26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                -24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
             );
@@ -436,7 +472,7 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             rcTop.bottom = rcBox.top + 42;
             DrawTextW(memDC, g_osdTextLine1, -1, &rcTop, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // Subtitle (Level + Battery in Cyan)
+            // Subtitle (Model + Battery in Cyan)
             HFONT hFontSub = CreateFontW(
                 -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -488,8 +524,8 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
     if (!g_hOsdWnd) return;
 
-    StringCchPrintfW(g_osdTextLine1, ARRAYSIZE(g_osdTextLine1), L"DPI %d", dpiX);
-    StringCchPrintfW(g_osdTextLine2, ARRAYSIZE(g_osdTextLine2), L"第 %d 档  |  电量 %d%%", dpiLevel, battery);
+    StringCchPrintfW(g_osdTextLine1, ARRAYSIZE(g_osdTextLine1), L"第 %d 档  DPI %d", dpiLevel, dpiX);
+    StringCchPrintfW(g_osdTextLine2, ARRAYSIZE(g_osdTextLine2), L"%s  |  电量 %d%%", g_detectedModel, battery);
 
     RECT rcWork;
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0)) {
@@ -498,7 +534,7 @@ static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
         rcWork.right = GetSystemMetrics(SM_CXSCREEN);
         rcWork.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
-    int w = 240;
+    int w = 260;
     int h = 76;
     int x = rcWork.left + ((rcWork.right - rcWork.left) - w) / 2;
     int y = rcWork.bottom - h - 80;
@@ -513,8 +549,8 @@ static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
     SetTimer(g_hOsdWnd, TIMER_OSD_HIDE, 1400, NULL);
 }
 
-// Find Rapoo col09 device path dynamically (supports wireless dongle pid_1460, wired USB pid_4660 and VT3s pid_1411)
-static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen) {
+// Find Rapoo col09 device path dynamically and identify hardware model
+static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, DWORD maxModelLen) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
 
@@ -540,10 +576,25 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen) {
             _wcslwr_s(lowerPath, MAX_PATH);
 
             if (wcsstr(lowerPath, L"vid_24ae") && 
-               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1411")) && 
+               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1411") || wcsstr(lowerPath, L"pid_1410")) && 
                 wcsstr(lowerPath, L"col09")) {
                 StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
                 found = true;
+
+                if (outModel && maxModelLen > 0) {
+                    if (wcsstr(lowerPath, L"pid_1460")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7");
+                    } else if (wcsstr(lowerPath, L"pid_4660")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7 (有线)");
+                    } else if (wcsstr(lowerPath, L"pid_1411")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S (有线)");
+                    } else if (wcsstr(lowerPath, L"pid_1410")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S");
+                    } else {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏无线鼠标");
+                    }
+                }
+
                 free(pDetail);
                 break;
             }
@@ -558,9 +609,14 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen) {
 // Low-overhead background reader thread
 static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
     WCHAR devPath[MAX_PATH] = {0};
+    WCHAR modelBuf[64] = {0};
 
     while (WaitForSingleObject(g_hStopEvent, 200) == WAIT_TIMEOUT) {
-        if (!FindRapooReportPath(devPath, MAX_PATH)) {
+        if (!FindRapooReportPath(devPath, MAX_PATH, modelBuf, 64)) {
+            if (g_deviceConnected) {
+                g_deviceConnected = false;
+                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+            }
             Sleep(1500);
             continue;
         }
@@ -576,9 +632,17 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         );
 
         if (hDev == INVALID_HANDLE_VALUE) {
+            if (g_deviceConnected) {
+                g_deviceConnected = false;
+                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+            }
             Sleep(1500);
             continue;
         }
+
+        StringCchCopyW(g_detectedModel, ARRAYSIZE(g_detectedModel), modelBuf);
+        g_deviceConnected = true;
+        PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
 
         HANDLE hReadEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         OVERLAPPED ov = {0};
@@ -644,6 +708,9 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             }
         }
 
+        g_deviceConnected = false;
+        PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+
         CloseHandle(hReadEvent);
         CloseHandle(hDev);
         Sleep(1000);
@@ -688,9 +755,15 @@ static void ShowContextMenu(HWND hWnd) {
     WCHAR bufBat[64];
     WCHAR bufDpi[64];
 
-    StringCchPrintfW(bufHeader, 64, L"VT3S");
-    StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
-    StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
+    if (g_deviceConnected) {
+        StringCchPrintfW(bufHeader, 64, L"%s", g_detectedModel);
+        StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
+        StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
+    } else {
+        StringCchPrintfW(bufHeader, 64, L"rapoo-tray (未连接)");
+        StringCchPrintfW(bufBat, 64, L"电池电量: --");
+        StringCchPrintfW(bufDpi, 64, L"当前 DPI: --");
+    }
 
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_HEADER, bufHeader);
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -760,6 +833,10 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             UpdateTrayIcon(bat);
             return 0;
         }
+        case WM_SETTINGCHANGE: {
+            UpdateTrayIcon(g_battery);
+            return 0;
+        }
         case WM_DEVICECHANGE: {
             return 0;
         }
@@ -796,6 +873,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = hInstance;
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"RapooTrayMessageWnd";
     RegisterClassExW(&wc);
 
@@ -813,9 +892,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     g_hOsdWnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         wcOsd.lpszClassName,
-        L"VT3S",
+        L"RapooOSD",
         WS_POPUP,
-        0, 0, 240, 76,
+        0, 0, 260, 76,
         NULL, NULL, hInstance, NULL
     );
 

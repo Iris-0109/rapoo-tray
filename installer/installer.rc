@@ -1,10 +1,13 @@
+#pragma code_page(65001)
+
 #define IDR_APP_PAYLOAD 1001
 
+1 ICON "..\\res\\app.ico"
 IDR_APP_PAYLOAD RCDATA "..\\bin\\rapoo-tray.exe"
 
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,1,0,0
+PRODUCTVERSION 1,1,0,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -13,20 +16,31 @@ FILESUBTYPE 0x0L
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904b0"
+        BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName", "rapoo-tray"
-            VALUE "FileDescription", "rapoo-tray Setup"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "CompanyName", "Iris"
+            VALUE "FileDescription", "rapoo-tray 安装程序"
+            VALUE "FileVersion", "1.1.0.0"
             VALUE "InternalName", "rapoo-tray-setup"
-            VALUE "LegalCopyright", "Copyright (C) 2026"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Iris"
             VALUE "OriginalFilename", "rapoo-tray-setup.exe"
             VALUE "ProductName", "rapoo-tray"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", "1.1.0.0"
+        END
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Iris"
+            VALUE "FileDescription", "rapoo-tray Setup"
+            VALUE "FileVersion", "1.1.0.0"
+            VALUE "InternalName", "rapoo-tray-setup"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Iris"
+            VALUE "OriginalFilename", "rapoo-tray-setup.exe"
+            VALUE "ProductName", "rapoo-tray"
+            VALUE "ProductVersion", "1.1.0.0"
         END
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x0409, 1200
+        VALUE "Translation", 0x0804, 1200, 0x0409, 1200
     END
 END
