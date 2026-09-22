@@ -201,7 +201,8 @@ static volatile LONG g_currentPollingHz = 1000;
 static volatile LONG g_currentSleepMin = 10;
 
 static WCHAR g_osdTextLine1[64] = L"第 1 档  DPI 1200";
-static WCHAR g_osdTextLine2[64] = L"雷柏 VT7  |  电量 100%";
+static WCHAR g_osdTextLine2[64] = L"X 轴: 1200    Y 轴: 1200";
+static WCHAR g_osdTextLine3[64] = L"雷柏 VT7  |  电量 100%  |  1000 Hz";
 static BYTE g_osdAlpha = 0;
 
 static UINT g_uTaskbarRestartMsg = 0;
@@ -212,8 +213,8 @@ static volatile bool g_deviceConnected = false;
 
 static void UpdateTrayTooltip();
 static void UpdateTrayIcon(int battery);
-static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2);
-static void ShowOsdNotification(int dpiLevel, int dpiX, int battery);
+static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3);
+static void ShowOsdNotification(int dpiLevel, int dpiX, int dpiY, int battery, int pollingHz);
 static bool IsAutoRunEnabled();
 static void SetAutoRun(bool enable);
 
@@ -613,23 +614,37 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             HPEN hBorder = CreatePen(PS_SOLID, 1, RGB(70, 75, 90));
             HGDIOBJ oldBr = SelectObject(memDC, hBg);
             HGDIOBJ oldPen = SelectObject(memDC, hBorder);
-            RoundRect(memDC, rcBox.left, rcBox.top, rcBox.right, rcBox.bottom, 22, 22);
+            RoundRect(memDC, rcBox.left, rcBox.top, rcBox.right, rcBox.bottom, 24, 24);
 
             SetBkMode(memDC, TRANSPARENT);
 
-            // Level + DPI Value (Prominent Bold Font)
+            // Line 1: Level + DPI Value (Bold Font -22)
             HFONT hFontBig = CreateFontW(
-                -24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                -22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
             );
             HGDIOBJ oldFont = SelectObject(memDC, hFontBig);
             SetTextColor(memDC, RGB(255, 255, 255));
             RECT rcTop = rcBox;
-            rcTop.bottom = rcBox.top + 42;
+            rcTop.top = rcBox.top + 7;
+            rcTop.bottom = rcBox.top + 34;
             DrawTextW(memDC, g_osdTextLine1, -1, &rcTop, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // Subtitle (Model + Status in Cyan)
+            // Line 2: X & Y Axis DPI (Font -15, slightly larger than bottom line -13, smaller than top line -22)
+            HFONT hFontMid = CreateFontW(
+                -15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
+            );
+            SelectObject(memDC, hFontMid);
+            SetTextColor(memDC, RGB(215, 230, 248));
+            RECT rcMid = rcBox;
+            rcMid.top = rcBox.top + 34;
+            rcMid.bottom = rcBox.top + 57;
+            DrawTextW(memDC, g_osdTextLine2, -1, &rcMid, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // Line 3: Model + Battery + Polling Rate (Signature Cyan Font -13)
             HFONT hFontSub = CreateFontW(
                 -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -638,8 +653,9 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             SelectObject(memDC, hFontSub);
             SetTextColor(memDC, RGB(130, 215, 255));
             RECT rcBot = rcBox;
-            rcBot.top = rcBox.top + 40;
-            DrawTextW(memDC, g_osdTextLine2, -1, &rcBot, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            rcBot.top = rcBox.top + 57;
+            rcBot.bottom = rcBox.top + 82;
+            DrawTextW(memDC, g_osdTextLine3, -1, &rcBot, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
 
@@ -650,6 +666,7 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             DeleteObject(memBmp);
             DeleteDC(memDC);
             DeleteObject(hFontBig);
+            DeleteObject(hFontMid);
             DeleteObject(hFontSub);
             DeleteObject(hBorder);
             DeleteObject(hBg);
@@ -678,11 +695,16 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 }
 
-static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2) {
+static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3) {
     if (!g_hOsdWnd) return;
 
     StringCchCopyW(g_osdTextLine1, ARRAYSIZE(g_osdTextLine1), line1);
     StringCchCopyW(g_osdTextLine2, ARRAYSIZE(g_osdTextLine2), line2);
+    if (line3) {
+        StringCchCopyW(g_osdTextLine3, ARRAYSIZE(g_osdTextLine3), line3);
+    } else {
+        g_osdTextLine3[0] = 0;
+    }
 
     RECT rcWork;
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0)) {
@@ -691,8 +713,8 @@ static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2) {
         rcWork.right = GetSystemMetrics(SM_CXSCREEN);
         rcWork.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
-    int w = 260;
-    int h = 76;
+    int w = 288;
+    int h = 92;
     int x = rcWork.left + ((rcWork.right - rcWork.left) - w) / 2;
     int y = rcWork.bottom - h - 80;
 
@@ -706,11 +728,12 @@ static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2) {
     SetTimer(g_hOsdWnd, TIMER_OSD_HIDE, 1400, NULL);
 }
 
-static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
-    WCHAR l1[64], l2[64];
+static void ShowOsdNotification(int dpiLevel, int dpiX, int dpiY, int battery, int pollingHz) {
+    WCHAR l1[64], l2[64], l3[64];
     StringCchPrintfW(l1, ARRAYSIZE(l1), L"第 %d 档  DPI %d", dpiLevel, dpiX);
-    StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  电量 %d%%", g_detectedModel, battery);
-    ShowCustomOsd(l1, l2);
+    StringCchPrintfW(l2, ARRAYSIZE(l2), L"X 轴: %d    Y 轴: %d", dpiX, dpiY);
+    StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s  |  电量 %d%%  |  %d Hz", g_detectedModel, battery, pollingHz);
+    ShowCustomOsd(l1, l2, l3);
 }
 
 // --------------------------------------------------------------------------
@@ -844,10 +867,11 @@ static void SetPollingRate(int hz) {
         UpdateTrayTooltip();
         Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 
-        WCHAR l1[64], l2[64];
+        WCHAR l1[64], l2[64], l3[64];
         StringCchPrintfW(l1, ARRAYSIZE(l1), L"回报率: %d Hz", hz);
-        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  设置已生效", g_detectedModel);
-        ShowCustomOsd(l1, l2);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"设置已即时生效");
+        StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s  |  电量 %d%%  |  %d Hz", g_detectedModel, g_battery, hz);
+        ShowCustomOsd(l1, l2, l3);
     }
 }
 
@@ -859,10 +883,11 @@ static void SetSleepTimeout(int minutes) {
     if (SendRapooCommand(0x08, 0xC2, &code, 1)) {
         InterlockedExchange(&g_currentSleepMin, minutes);
 
-        WCHAR l1[64], l2[64];
+        WCHAR l1[64], l2[64], l3[64];
         StringCchPrintfW(l1, ARRAYSIZE(l1), L"休眠时间: %d 分钟", minutes);
-        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  设置已生效", g_detectedModel);
-        ShowCustomOsd(l1, l2);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"设置已即时生效");
+        StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s  |  电量 %d%%  |  %d Hz", g_detectedModel, g_battery, g_currentPollingHz);
+        ShowCustomOsd(l1, l2, l3);
     }
 }
 
@@ -1197,6 +1222,7 @@ struct SubMenuItem {
 static HWND g_hAcrylicMenu = NULL;
 static HWND g_hAcrylicSubMenu = NULL;
 static bool g_bModalLoop = false;
+static HHOOK g_hMenuMouseHook = NULL;
 static int g_mainHover = -1;
 static int g_subHover = -1;
 static int g_activeSubId = 0; // 0=none, 1=poll, 2=sleep
@@ -1237,17 +1263,54 @@ static void DismissSubMenu() {
 }
 
 static void DismissAllMenus() {
+    if (g_hMenuMouseHook) {
+        UnhookWindowsHookEx(g_hMenuMouseHook);
+        g_hMenuMouseHook = NULL;
+    }
     DismissSubMenu();
     if (g_hAcrylicMenu) {
-        DestroyWindow(g_hAcrylicMenu);
+        HWND h = g_hAcrylicMenu;
         g_hAcrylicMenu = NULL;
+        DestroyWindow(h);
     }
     g_bModalLoop = false;
+    if (g_hParentAppWnd) {
+        PostMessageW(g_hParentAppWnd, WM_NULL, 0, 0);
+    }
+}
+
+static LRESULT CALLBACK MenuMouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || 
+            wParam == WM_NCLBUTTONDOWN || wParam == WM_NCRBUTTONDOWN ||
+            wParam == WM_MBUTTONDOWN) {
+            MSLLHOOKSTRUCT* p = (MSLLHOOKSTRUCT*)lParam;
+            POINT pt = p->pt;
+            RECT rM = {0}, rS = {0};
+            if (g_hAcrylicMenu && IsWindow(g_hAcrylicMenu)) GetWindowRect(g_hAcrylicMenu, &rM);
+            if (g_hAcrylicSubMenu && IsWindow(g_hAcrylicSubMenu)) GetWindowRect(g_hAcrylicSubMenu, &rS);
+            bool inM = (g_hAcrylicMenu && IsWindow(g_hAcrylicMenu)) && PtInRect(&rM, pt);
+            bool inS = (g_hAcrylicSubMenu && IsWindow(g_hAcrylicSubMenu)) && PtInRect(&rS, pt);
+            if (!inM && !inS) {
+                DismissAllMenus();
+            }
+        }
+    }
+    return CallNextHookEx(g_hMenuMouseHook, nCode, wParam, lParam);
 }
 
 // SubMenu WndProc
 static LRESULT CALLBACK AcrylicSubWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                HWND hOther = (HWND)lParam;
+                if (hOther != g_hAcrylicMenu && hOther != g_hAcrylicSubMenu) {
+                    DismissAllMenus();
+                }
+            }
+            return 0;
+        }
         case WM_ERASEBKGND:
             return 1;
         case WM_MOUSEMOVE: {
@@ -1458,6 +1521,15 @@ static int HitTestMain(int my) {
 
 static LRESULT CALLBACK AcrylicMainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                HWND hOther = (HWND)lParam;
+                if (hOther != g_hAcrylicMenu && hOther != g_hAcrylicSubMenu) {
+                    DismissAllMenus();
+                }
+            }
+            return 0;
+        }
         case WM_ERASEBKGND:
             return 1;
         case WM_MOUSEMOVE: {
@@ -1728,6 +1800,8 @@ static void ShowContextMenu(HWND hWnd) {
     UpdateWindow(g_hAcrylicMenu);
     SetForegroundWindow(g_hAcrylicMenu);
 
+    g_hMenuMouseHook = SetWindowsHookExW(WH_MOUSE_LL, MenuMouseHookProc, GetModuleHandleW(NULL), 0);
+
     g_bModalLoop = true;
     MSG msg;
     while (g_bModalLoop && GetMessageW(&msg, NULL, 0, 0)) {
@@ -1735,10 +1809,10 @@ static void ShowContextMenu(HWND hWnd) {
             msg.message == WM_NCLBUTTONDOWN || msg.message == WM_NCRBUTTONDOWN) {
             POINT curPt = msg.pt;
             RECT rM = {0}, rS = {0};
-            if (g_hAcrylicMenu) GetWindowRect(g_hAcrylicMenu, &rM);
-            if (g_hAcrylicSubMenu) GetWindowRect(g_hAcrylicSubMenu, &rS);
-            bool inM = PtInRect(&rM, curPt);
-            bool inS = (g_hAcrylicSubMenu != NULL) && PtInRect(&rS, curPt);
+            if (g_hAcrylicMenu && IsWindow(g_hAcrylicMenu)) GetWindowRect(g_hAcrylicMenu, &rM);
+            if (g_hAcrylicSubMenu && IsWindow(g_hAcrylicSubMenu)) GetWindowRect(g_hAcrylicSubMenu, &rS);
+            bool inM = (g_hAcrylicMenu && IsWindow(g_hAcrylicMenu)) && PtInRect(&rM, curPt);
+            bool inS = (g_hAcrylicSubMenu && IsWindow(g_hAcrylicSubMenu)) && PtInRect(&rS, curPt);
             if (!inM && !inS) {
                 DismissAllMenus();
                 break;
@@ -1751,6 +1825,12 @@ static void ShowContextMenu(HWND hWnd) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    if (g_hMenuMouseHook) {
+        UnhookWindowsHookEx(g_hMenuMouseHook);
+        g_hMenuMouseHook = NULL;
+    }
+    DismissAllMenus();
 }
 
 static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1764,7 +1844,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
                 ShowContextMenu(hWnd);
             } else if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
-                ShowOsdNotification(g_dpiLevel, g_dpiX, g_battery);
+                ShowOsdNotification(g_dpiLevel, g_dpiX, g_dpiY, g_battery, g_currentPollingHz);
             }
             return 0;
         }
@@ -1808,7 +1888,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_APP_DPI_UPDATE: {
             int level = (int)wParam;
             int dpix = (int)lParam;
-            ShowOsdNotification(level, dpix, g_battery);
+            ShowOsdNotification(level, dpix, g_dpiY, g_battery, g_currentPollingHz);
             UpdateTrayTooltip();
             Shell_NotifyIconW(NIM_MODIFY, &g_nid);
             return 0;
@@ -1892,7 +1972,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         wcOsd.lpszClassName,
         L"RapooOSD",
         WS_POPUP,
-        0, 0, 260, 76,
+        0, 0, 288, 92,
         NULL, NULL, hInstance, NULL
     );
 
