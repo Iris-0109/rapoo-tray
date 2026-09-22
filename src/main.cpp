@@ -21,6 +21,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdio.h>
 #include <uxtheme.h>
+#include <dwmapi.h>
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "hid.lib")
@@ -29,6 +30,90 @@ extern "C" {
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+
+typedef enum _WINDOWCOMPOSITIONATTRIB {
+    WCA_ACCENT_POLICY = 19
+} WINDOWCOMPOSITIONATTRIB;
+
+typedef enum _ACCENT_STATE {
+    ACCENT_DISABLED = 0,
+    ACCENT_ENABLE_GRADIENT = 1,
+    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+    ACCENT_ENABLE_BLURBEHIND = 3,
+    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
+    ACCENT_INVALID_STATE = 5
+} ACCENT_STATE;
+
+typedef struct _ACCENT_POLICY {
+    ACCENT_STATE AccentState;
+    DWORD AccentFlags;
+    DWORD GradientColor;
+    DWORD AnimationId;
+} ACCENT_POLICY;
+
+typedef struct _WINDOWCOMPOSITIONATTRIBDATA {
+    WINDOWCOMPOSITIONATTRIB Attrib;
+    PVOID pvData;
+    SIZE_T cbData;
+} WINDOWCOMPOSITIONATTRIBDATA;
+
+typedef BOOL (WINAPI *pfnSetWindowCompositionAttribute)(HWND, WINDOWCOMPOSITIONATTRIBDATA*);
+static pfnSetWindowCompositionAttribute fnSetWindowCompositionAttribute = NULL;
+
+static bool IsSystemDarkMode() {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD val = 1;
+        DWORD size = sizeof(val);
+        if (RegQueryValueExW(hKey, L"AppsUseLightTheme", NULL, NULL, (LPBYTE)&val, &size) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return (val == 0);
+        }
+        RegCloseKey(hKey);
+    }
+    return true;
+}
+
+static void ApplyAcrylic(HWND hWnd, bool dark) {
+    BOOL bDark = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hWnd, (DWORD)DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
+    int corner = 2; // DWMWCP_ROUND
+    DwmSetWindowAttribute(hWnd, (DWORD)DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
+    int backdrop = 3; // DWMSBT_TRANSIENTWINDOW (Acrylic)
+    DwmSetWindowAttribute(hWnd, (DWORD)DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+
+    if (!fnSetWindowCompositionAttribute) {
+        HMODULE hUser = GetModuleHandleW(L"user32.dll");
+        if (hUser) {
+            fnSetWindowCompositionAttribute = (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute");
+        }
+    }
+    if (fnSetWindowCompositionAttribute) {
+        ACCENT_POLICY policy;
+        memset(&policy, 0, sizeof(policy));
+        policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+        policy.AccentFlags = 2;
+        policy.GradientColor = dark ? 0xCC201E1C : 0xCCFAF8F5;
+        WINDOWCOMPOSITIONATTRIBDATA data;
+        data.Attrib = WCA_ACCENT_POLICY;
+        data.pvData = &policy;
+        data.cbData = sizeof(policy);
+        fnSetWindowCompositionAttribute(hWnd, &data);
+    }
+    SetLayeredWindowAttributes(hWnd, 0, 230, LWA_ALPHA);
+}
 
 enum PreferredAppMode {
     Default,
@@ -1089,71 +1174,583 @@ static void SetAutoRun(bool enable) {
     }
 }
 
-// Right-Click Context Menu & Control Panel
+// ============================================================================
+// Modern Native Win32 Acrylic Context Menu Implementation (Option B)
+// ============================================================================
+struct MainMenuItem {
+    int id;
+    const wchar_t* label;
+    const wchar_t* value;
+    bool isSeparator;
+    bool isHeader;
+    int submenuType; // 0=none, 1=poll, 2=sleep
+    bool isDisabled;
+    bool isInteractive;
+};
+
+struct SubMenuItem {
+    int id;
+    const wchar_t* label;
+    bool isChecked;
+};
+
+static HWND g_hAcrylicMenu = NULL;
+static HWND g_hAcrylicSubMenu = NULL;
+static bool g_bModalLoop = false;
+static int g_mainHover = -1;
+static int g_subHover = -1;
+static int g_activeSubId = 0; // 0=none, 1=poll, 2=sleep
+static UINT g_curDpi = 96;
+static bool g_curDark = true;
+static HWND g_hParentAppWnd = NULL;
+
+static inline int S(int v) {
+    return MulDiv(v, g_curDpi, 96);
+}
+
+static SubMenuItem g_subPoll[7];
+static SubMenuItem g_subSleep[5];
+
+static void InitSubData(int pollHz, int sleepMin) {
+    g_subPoll[0] = { IDM_POLL_125,  L"125 Hz", pollHz == 125 };
+    g_subPoll[1] = { IDM_POLL_250,  L"250 Hz", pollHz == 250 };
+    g_subPoll[2] = { IDM_POLL_500,  L"500 Hz", pollHz == 500 };
+    g_subPoll[3] = { IDM_POLL_1000, L"1000 Hz (默认标准)", pollHz == 1000 };
+    g_subPoll[4] = { IDM_POLL_2000, L"2000 Hz", pollHz == 2000 };
+    g_subPoll[5] = { IDM_POLL_4000, L"4000 Hz", pollHz == 4000 };
+    g_subPoll[6] = { IDM_POLL_8000, L"8000 Hz (电竞高刷)", pollHz == 8000 };
+
+    g_subSleep[0] = { IDM_SLEEP_2M,  L"2 分钟", sleepMin == 2 };
+    g_subSleep[1] = { IDM_SLEEP_5M,  L"5 分钟", sleepMin == 5 };
+    g_subSleep[2] = { IDM_SLEEP_10M, L"10 分钟 (推荐)", sleepMin == 10 };
+    g_subSleep[3] = { IDM_SLEEP_30M, L"30 分钟", sleepMin == 30 };
+    g_subSleep[4] = { IDM_SLEEP_60M, L"60 分钟", sleepMin == 60 };
+}
+
+static void DismissSubMenu() {
+    if (g_hAcrylicSubMenu) {
+        DestroyWindow(g_hAcrylicSubMenu);
+        g_hAcrylicSubMenu = NULL;
+    }
+    g_activeSubId = 0;
+    g_subHover = -1;
+}
+
+static void DismissAllMenus() {
+    DismissSubMenu();
+    if (g_hAcrylicMenu) {
+        DestroyWindow(g_hAcrylicMenu);
+        g_hAcrylicMenu = NULL;
+    }
+    g_bModalLoop = false;
+}
+
+// SubMenu WndProc
+static LRESULT CALLBACK AcrylicSubWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_MOUSEMOVE: {
+            int my = HIWORD(lParam);
+            int count = (g_activeSubId == 1) ? 7 : 5;
+            int itemH = S(28);
+            int y = S(8);
+            int newH = -1;
+            for (int i = 0; i < count; i++) {
+                if (my >= y && my < y + itemH) {
+                    newH = i;
+                    break;
+                }
+                y += itemH;
+            }
+            if (newH != g_subHover) {
+                g_subHover = newH;
+                InvalidateRect(hWnd, NULL, FALSE);
+            }
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tme);
+            return 0;
+        }
+        case WM_MOUSELEAVE: {
+            if (g_subHover != -1) {
+                g_subHover = -1;
+                InvalidateRect(hWnd, NULL, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONUP: {
+            int count = (g_activeSubId == 1) ? 7 : 5;
+            if (g_subHover >= 0 && g_subHover < count) {
+                int cmd = (g_activeSubId == 1) ? g_subPoll[g_subHover].id : g_subSleep[g_subHover].id;
+                HWND hOwner = g_hParentAppWnd;
+                DismissAllMenus();
+                if (hOwner) {
+                    PostMessageW(hOwner, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+                }
+            }
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP hbm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+            HBITMAP oldBm = (HBITMAP)SelectObject(memDC, hbm);
+
+            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(248, 248, 252);
+            COLORREF borderCol = g_curDark ? RGB(65, 70, 85) : RGB(210, 215, 225);
+            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(228, 232, 242);
+            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(30, 35, 45);
+            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 120, 215);
+
+            HBRUSH bgBrush = CreateSolidBrush(bgCol);
+            FillRect(memDC, &rc, bgBrush);
+            DeleteObject(bgBrush);
+
+            HPEN borderPen = CreatePen(PS_SOLID, 1, borderCol);
+            HPEN oldPen = (HPEN)SelectObject(memDC, borderPen);
+            HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, nullBrush);
+            RoundRect(memDC, 0, 0, rc.right, rc.bottom, S(12), S(12));
+            SelectObject(memDC, oldPen);
+            DeleteObject(borderPen);
+
+            HFONT hFont = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+            HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
+            SetBkMode(memDC, TRANSPARENT);
+
+            int count = (g_activeSubId == 1) ? 7 : 5;
+            int itemH = S(28);
+            int y = S(8);
+            for (int i = 0; i < count; i++) {
+                const SubMenuItem& it = (g_activeSubId == 1) ? g_subPoll[i] : g_subSleep[i];
+                RECT rItem = { S(6), y, rc.right - S(6), y + itemH };
+
+                if (i == g_subHover) {
+                    HBRUSH hH = CreateSolidBrush(hoverCol);
+                    HPEN nPen = (HPEN)GetStockObject(NULL_PEN);
+                    HPEN oP = (HPEN)SelectObject(memDC, nPen);
+                    HBRUSH oB = (HBRUSH)SelectObject(memDC, hH);
+                    RoundRect(memDC, rItem.left, rItem.top + 1, rItem.right, rItem.bottom - 1, S(6), S(6));
+                    SelectObject(memDC, oP);
+                    SelectObject(memDC, oB);
+                    DeleteObject(hH);
+                }
+
+                SetTextColor(memDC, textCol);
+                RECT rText = { S(14), y, rc.right - S(32), y + itemH };
+                DrawTextW(memDC, it.label, -1, &rText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                if (it.isChecked) {
+                    SetTextColor(memDC, checkCol);
+                    RECT rCheck = { rc.right - S(28), y, rc.right - S(10), y + itemH };
+                    DrawTextW(memDC, L"✓", -1, &rCheck, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                y += itemH;
+            }
+
+            SelectObject(memDC, oldFont);
+            DeleteObject(hFont);
+
+            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, oldBm);
+            DeleteObject(hbm);
+            DeleteDC(memDC);
+
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        case WM_DESTROY:
+            return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void ShowSubMenuWindow(int subType, RECT rItemScreen) {
+    if (g_activeSubId == subType && g_hAcrylicSubMenu) return;
+    DismissSubMenu();
+    g_activeSubId = subType;
+
+    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(g_hAcrylicMenu, GWLP_HINSTANCE);
+    static bool s_subRegistered = false;
+    if (!s_subRegistered) {
+        WNDCLASSEXW wcSub = {0};
+        wcSub.cbSize = sizeof(wcSub);
+        wcSub.lpfnWndProc = AcrylicSubWndProc;
+        wcSub.hInstance = hInst;
+        wcSub.lpszClassName = L"RapooAcrylicSubClass";
+        wcSub.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wcSub.style = CS_DROPSHADOW;
+        RegisterClassExW(&wcSub);
+        s_subRegistered = true;
+    }
+
+    int subW = (subType == 1) ? S(170) : S(140);
+    int count = (subType == 1) ? 7 : 5;
+    int subH = count * S(28) + S(16);
+
+    HMONITOR hMon = MonitorFromRect(&rItemScreen, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    GetMonitorInfoW(hMon, &mi);
+
+    int subX = rItemScreen.left - subW - S(4);
+    if (subX < mi.rcWork.left) {
+        subX = rItemScreen.right + S(4);
+    }
+    int subY = rItemScreen.top - S(6);
+    if (subY + subH > mi.rcWork.bottom) {
+        subY = mi.rcWork.bottom - subH;
+    }
+    if (subY < mi.rcWork.top) {
+        subY = mi.rcWork.top;
+    }
+
+    g_hAcrylicSubMenu = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"RapooAcrylicSubClass",
+        L"AcrylicSub",
+        WS_POPUP,
+        subX, subY, subW, subH,
+        g_hAcrylicMenu, NULL, hInst, NULL
+    );
+
+    ApplyAcrylic(g_hAcrylicSubMenu, g_curDark);
+    ShowWindow(g_hAcrylicSubMenu, SW_SHOWNOACTIVATE);
+    UpdateWindow(g_hAcrylicSubMenu);
+}
+
+static MainMenuItem g_mainItems[13];
+static const int MAIN_ITEM_COUNT = 13;
+
+static int GetItemY(int idx) {
+    int y = S(8);
+    for (int i = 0; i < idx; i++) {
+        if (g_mainItems[i].isHeader) y += S(44);
+        else if (g_mainItems[i].isSeparator) y += S(9);
+        else y += S(28);
+    }
+    return y;
+}
+
+static int GetItemH(int idx) {
+    if (g_mainItems[idx].isHeader) return S(44);
+    if (g_mainItems[idx].isSeparator) return S(9);
+    return S(28);
+}
+
+static int HitTestMain(int my) {
+    int y = S(8);
+    for (int i = 0; i < MAIN_ITEM_COUNT; i++) {
+        int h = GetItemH(i);
+        if (my >= y && my < y + h) {
+            if (g_mainItems[i].isHeader || g_mainItems[i].isSeparator || g_mainItems[i].isDisabled) return -1;
+            return i;
+        }
+        y += h;
+    }
+    return -1;
+}
+
+static LRESULT CALLBACK AcrylicMainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_MOUSEMOVE: {
+            int my = HIWORD(lParam);
+            int newH = HitTestMain(my);
+            if (newH != g_mainHover) {
+                g_mainHover = newH;
+                InvalidateRect(hWnd, NULL, FALSE);
+
+                if (newH >= 0 && g_mainItems[newH].submenuType > 0 && !g_mainItems[newH].isDisabled) {
+                    RECT rcItem = { 0, GetItemY(newH), S(236), GetItemY(newH) + GetItemH(newH) };
+                    POINT ptTopLeft = { rcItem.left, rcItem.top };
+                    POINT ptBottomRight = { rcItem.right, rcItem.bottom };
+                    ClientToScreen(hWnd, &ptTopLeft);
+                    ClientToScreen(hWnd, &ptBottomRight);
+                    RECT rScreen = { ptTopLeft.x, ptTopLeft.y, ptBottomRight.x, ptBottomRight.y };
+                    ShowSubMenuWindow(g_mainItems[newH].submenuType, rScreen);
+                } else if (newH >= 0 && g_mainItems[newH].submenuType == 0) {
+                    DismissSubMenu();
+                }
+            }
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tme);
+            return 0;
+        }
+        case WM_MOUSELEAVE: {
+            POINT pt;
+            GetCursorPos(&pt);
+            if (g_hAcrylicSubMenu) {
+                RECT rSub;
+                GetWindowRect(g_hAcrylicSubMenu, &rSub);
+                if (PtInRect(&rSub, pt)) {
+                    return 0;
+                }
+            }
+            if (g_mainHover != -1) {
+                g_mainHover = -1;
+                InvalidateRect(hWnd, NULL, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONUP: {
+            int idx = HitTestMain(HIWORD(lParam));
+            if (idx >= 0 && g_mainItems[idx].isInteractive && !g_mainItems[idx].isDisabled) {
+                int cmd = g_mainItems[idx].id;
+                HWND hOwner = g_hParentAppWnd;
+                DismissAllMenus();
+                if (hOwner) {
+                    PostMessageW(hOwner, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+                }
+            }
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP hbm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+            HBITMAP oldBm = (HBITMAP)SelectObject(memDC, hbm);
+
+            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(248, 248, 252);
+            COLORREF borderCol = g_curDark ? RGB(65, 70, 85) : RGB(210, 215, 225);
+            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(228, 232, 242);
+            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(30, 35, 45);
+            COLORREF mutedCol = g_curDark ? RGB(155, 165, 180) : RGB(100, 110, 125);
+            COLORREF greenCol = g_curDark ? RGB(34, 197, 94) : RGB(22, 163, 74);
+            COLORREF sepCol = g_curDark ? RGB(48, 52, 64) : RGB(220, 225, 235);
+            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 120, 215);
+
+            HBRUSH bgBrush = CreateSolidBrush(bgCol);
+            FillRect(memDC, &rc, bgBrush);
+            DeleteObject(bgBrush);
+
+            HPEN borderPen = CreatePen(PS_SOLID, 1, borderCol);
+            HPEN oldPen = (HPEN)SelectObject(memDC, borderPen);
+            HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, nullBrush);
+            RoundRect(memDC, 0, 0, rc.right, rc.bottom, S(14), S(14));
+            SelectObject(memDC, oldPen);
+            DeleteObject(borderPen);
+
+            HFONT hFontNormal = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+            HFONT hFontBold = CreateFontW(-S(14), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+            HFONT hFontSub = CreateFontW(-S(11), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+
+            HFONT oldFont = (HFONT)SelectObject(memDC, hFontNormal);
+            SetBkMode(memDC, TRANSPARENT);
+
+            int y = S(8);
+            for (int i = 0; i < MAIN_ITEM_COUNT; i++) {
+                int h = GetItemH(i);
+                if (g_mainItems[i].isHeader) {
+                    SelectObject(memDC, hFontBold);
+                    SetTextColor(memDC, textCol);
+                    RECT rTitle = { S(14), y + S(2), rc.right - S(14), y + S(22) };
+                    DrawTextW(memDC, g_mainItems[i].label, -1, &rTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                    SelectObject(memDC, hFontSub);
+                    SetTextColor(memDC, (wcsstr(g_mainItems[i].value, L"已连接") != NULL) ? greenCol : mutedCol);
+                    RECT rSub = { S(14), y + S(22), rc.right - S(14), y + S(42) };
+                    DrawTextW(memDC, g_mainItems[i].value, -1, &rSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    y += h;
+                } else if (g_mainItems[i].isSeparator) {
+                    HPEN pSep = CreatePen(PS_SOLID, 1, sepCol);
+                    HPEN oP = (HPEN)SelectObject(memDC, pSep);
+                    MoveToEx(memDC, S(12), y + S(4), NULL);
+                    LineTo(memDC, rc.right - S(12), y + S(4));
+                    SelectObject(memDC, oP);
+                    DeleteObject(pSep);
+                    y += h;
+                } else {
+                    RECT rItem = { S(6), y, rc.right - S(6), y + h };
+
+                    if (i == g_mainHover && g_mainItems[i].isInteractive && !g_mainItems[i].isDisabled) {
+                        HBRUSH hH = CreateSolidBrush(hoverCol);
+                        HPEN nPen = (HPEN)GetStockObject(NULL_PEN);
+                        HPEN oP = (HPEN)SelectObject(memDC, nPen);
+                        HBRUSH oB = (HBRUSH)SelectObject(memDC, hH);
+                        RoundRect(memDC, rItem.left, rItem.top + 1, rItem.right, rItem.bottom - 1, S(6), S(6));
+                        SelectObject(memDC, oP);
+                        SelectObject(memDC, oB);
+                        DeleteObject(hH);
+                    }
+
+                    SelectObject(memDC, hFontNormal);
+                    SetTextColor(memDC, g_mainItems[i].isDisabled ? mutedCol : textCol);
+                    RECT rLabel = { S(14), y, rc.right - S(90), y + h };
+                    DrawTextW(memDC, g_mainItems[i].label, -1, &rLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                    if (g_mainItems[i].value && g_mainItems[i].value[0]) {
+                        bool isCheck = (wcscmp(g_mainItems[i].value, L"✓ 已开启") == 0);
+                        SetTextColor(memDC, isCheck ? checkCol : mutedCol);
+                        RECT rVal = { rc.right - S(110), y, rc.right - S(14), y + h };
+                        DrawTextW(memDC, g_mainItems[i].value, -1, &rVal, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                    }
+                    y += h;
+                }
+            }
+
+            SelectObject(memDC, oldFont);
+            DeleteObject(hFontNormal);
+            DeleteObject(hFontBold);
+            DeleteObject(hFontSub);
+
+            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, oldBm);
+            DeleteObject(hbm);
+            DeleteDC(memDC);
+
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        case WM_DESTROY:
+            return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// Right-Click Context Menu & Control Panel (Option B: Acrylic Modern Menu)
 static void ShowContextMenu(HWND hWnd) {
+    if (g_bModalLoop) return;
+    g_hParentAppWnd = hWnd;
+
+    g_curDark = IsSystemDarkMode();
+
     POINT pt;
     GetCursorPos(&pt);
+    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    GetMonitorInfoW(hMon, &mi);
 
-    HMENU hMenu = CreatePopupMenu();
-    WCHAR bufHeader[64];
-    WCHAR bufBat[64];
-    WCHAR bufDpi[64];
-    WCHAR bufPoll[64];
+    HMODULE hUser = GetModuleHandleW(L"user32.dll");
+    if (hUser) {
+        typedef UINT (WINAPI *pfnGetDpiForWindow)(HWND);
+        pfnGetDpiForWindow fnGetDpi = (pfnGetDpiForWindow)GetProcAddress(hUser, "GetDpiForWindow");
+        if (fnGetDpi && hWnd) {
+            g_curDpi = fnGetDpi(hWnd);
+        }
+    }
+    if (g_curDpi == 0) g_curDpi = 96;
 
+    static WCHAR szHeaderTitle[64];
+    static WCHAR szHeaderSub[64];
+    static WCHAR szBatVal[32];
+    static WCHAR szDpiVal[32];
+    static WCHAR szPollInfoVal[32];
+    static WCHAR szPollSetVal[32];
+    static WCHAR szSleepSetVal[32];
+    static WCHAR szAutoRunVal[32];
+
+    StringCchCopyW(szHeaderTitle, 64, g_detectedModel);
     if (g_deviceConnected) {
-        StringCchPrintfW(bufHeader, 64, L"%s (已连接)", g_detectedModel);
-        StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
-        StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
-        StringCchPrintfW(bufPoll, 64, L"当前回报率: %d Hz", g_currentPollingHz);
+        StringCchCopyW(szHeaderSub, 64, L"● 2.4G 无线模式  ·  已连接");
+        StringCchPrintfW(szBatVal, 32, L"%d%%", g_battery);
+        StringCchPrintfW(szDpiVal, 32, L"%d (第 %d 档)", g_dpiX, g_dpiLevel);
+        StringCchPrintfW(szPollInfoVal, 32, L"%d Hz", g_currentPollingHz);
+        StringCchPrintfW(szPollSetVal, 32, L"%d Hz  ›", g_currentPollingHz);
     } else {
-        StringCchPrintfW(bufHeader, 64, L"%s (休眠 / 未连接)", g_detectedModel);
-        StringCchPrintfW(bufBat, 64, L"电池电量: --");
-        StringCchPrintfW(bufDpi, 64, L"当前 DPI: --");
-        StringCchPrintfW(bufPoll, 64, L"当前回报率: --");
+        StringCchCopyW(szHeaderSub, 64, L"● 设备休眠 / 未连接");
+        StringCchCopyW(szBatVal, 32, L"--");
+        StringCchCopyW(szDpiVal, 32, L"--");
+        StringCchCopyW(szPollInfoVal, 32, L"--");
+        StringCchCopyW(szPollSetVal, 32, L"--  ›");
+    }
+    StringCchPrintfW(szSleepSetVal, 32, L"%d 分钟  ›", g_currentSleepMin);
+    StringCchCopyW(szAutoRunVal, 32, IsAutoRunEnabled() ? L"✓ 已开启" : L"未开启");
+
+    InitSubData(g_currentPollingHz, g_currentSleepMin);
+
+    g_mainItems[0]  = { IDM_HEADER,    szHeaderTitle,      szHeaderSub,   false, true,  0, false, false };
+    g_mainItems[1]  = { 0,             NULL,               NULL,          true,  false, 0, false, false };
+    g_mainItems[2]  = { IDM_BATTERY,   L"⚡  电池电量",    szBatVal,      false, false, 0, false, false };
+    g_mainItems[3]  = { IDM_DPI,       L"🎯  当前 DPI",    szDpiVal,      false, false, 0, false, false };
+    g_mainItems[4]  = { IDM_POLL_INFO, L"📡  当前回报率",  szPollInfoVal, false, false, 0, false, false };
+    g_mainItems[5]  = { 0,             NULL,               NULL,          true,  false, 0, false, false };
+    g_mainItems[6]  = { 0,             L"⚙️  回报率设置",  szPollSetVal,  false, false, 1, !g_deviceConnected, true };
+    g_mainItems[7]  = { 0,             L"⏱️  休眠时间",    szSleepSetVal, false, false, 2, !g_deviceConnected, true };
+    g_mainItems[8]  = { 0,             NULL,               NULL,          true,  false, 0, false, false };
+    g_mainItems[9]  = { IDM_AUTORUN,   L"🚀  开机自启动",  szAutoRunVal,  false, false, 0, false, true };
+    g_mainItems[10] = { IDM_RECONNECT, L"🔄  重新连接外设", L"",           false, false, 0, false, true };
+    g_mainItems[11] = { 0,             NULL,               NULL,          true,  false, 0, false, false };
+    g_mainItems[12] = { IDM_EXIT,      L"✕  退出程序",     L"",           false, false, 0, false, true };
+
+    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hWnd, GWLP_HINSTANCE);
+    static bool s_mainRegistered = false;
+    if (!s_mainRegistered) {
+        WNDCLASSEXW wc = {0};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = AcrylicMainWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = L"RapooAcrylicMainClass";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.style = CS_DROPSHADOW;
+        RegisterClassExW(&wc);
+        s_mainRegistered = true;
     }
 
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_HEADER, bufHeader);
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_BATTERY, bufBat);
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_DPI, bufDpi);
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_POLL_INFO, bufPoll);
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    int menuW = S(236);
+    int menuH = GetItemY(MAIN_ITEM_COUNT) + S(8);
 
-    // Submenu 1: Polling Rate
-    HMENU hSubPoll = CreatePopupMenu();
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 125 ? MF_CHECKED : 0), IDM_POLL_125, L"125 Hz");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 250 ? MF_CHECKED : 0), IDM_POLL_250, L"250 Hz");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 500 ? MF_CHECKED : 0), IDM_POLL_500, L"500 Hz");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 1000 ? MF_CHECKED : 0), IDM_POLL_1000, L"1000 Hz (默认标准)");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 2000 ? MF_CHECKED : 0), IDM_POLL_2000, L"2000 Hz");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 4000 ? MF_CHECKED : 0), IDM_POLL_4000, L"4000 Hz");
-    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 8000 ? MF_CHECKED : 0), IDM_POLL_8000, L"8000 Hz (电竞高刷)");
-    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubPoll, L"回报率设置");
+    int posX = pt.x - menuW;
+    int posY = pt.y - menuH;
+    if (posX < mi.rcWork.left) posX = pt.x + S(4);
+    if (posY < mi.rcWork.top) posY = pt.y + S(4);
+    if (posX + menuW > mi.rcWork.right) posX = mi.rcWork.right - menuW - S(4);
+    if (posY + menuH > mi.rcWork.bottom) posY = mi.rcWork.bottom - menuH - S(4);
 
-    // Submenu 2: Sleep Timeout
-    HMENU hSubSleep = CreatePopupMenu();
-    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 2 ? MF_CHECKED : 0), IDM_SLEEP_2M, L"2 分钟");
-    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 5 ? MF_CHECKED : 0), IDM_SLEEP_5M, L"5 分钟");
-    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 10 ? MF_CHECKED : 0), IDM_SLEEP_10M, L"10 分钟 (推荐)");
-    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 30 ? MF_CHECKED : 0), IDM_SLEEP_30M, L"30 分钟");
-    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 60 ? MF_CHECKED : 0), IDM_SLEEP_60M, L"60 分钟");
-    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubSleep, L"休眠时间");
+    g_hAcrylicMenu = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"RapooAcrylicMainClass",
+        L"RapooAcrylicMenu",
+        WS_POPUP,
+        posX, posY, menuW, menuH,
+        hWnd, NULL, hInst, NULL
+    );
 
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    ApplyAcrylic(g_hAcrylicMenu, g_curDark);
+    ShowWindow(g_hAcrylicMenu, SW_SHOW);
+    UpdateWindow(g_hAcrylicMenu);
+    SetForegroundWindow(g_hAcrylicMenu);
 
-    UINT autoRunFlags = MF_STRING | (IsAutoRunEnabled() ? MF_CHECKED : MF_UNCHECKED);
-    AppendMenuW(hMenu, autoRunFlags, IDM_AUTORUN, L"开机自启动");
-    AppendMenuW(hMenu, MF_STRING, IDM_RECONNECT, L"重新连接外设");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"退出");
+    g_bModalLoop = true;
+    MSG msg;
+    while (g_bModalLoop && GetMessageW(&msg, NULL, 0, 0)) {
+        if (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN || 
+            msg.message == WM_NCLBUTTONDOWN || msg.message == WM_NCRBUTTONDOWN) {
+            POINT curPt = msg.pt;
+            RECT rM = {0}, rS = {0};
+            if (g_hAcrylicMenu) GetWindowRect(g_hAcrylicMenu, &rM);
+            if (g_hAcrylicSubMenu) GetWindowRect(g_hAcrylicSubMenu, &rS);
+            bool inM = PtInRect(&rM, curPt);
+            bool inS = (g_hAcrylicSubMenu != NULL) && PtInRect(&rS, curPt);
+            if (!inM && !inS) {
+                DismissAllMenus();
+                break;
+            }
+        } else if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+            DismissAllMenus();
+            break;
+        }
 
-    if (fnFlushMenuThemes) {
-        fnFlushMenuThemes();
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
-
-    SetForegroundWindow(hWnd);
-    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
-    DestroyMenu(hMenu);
 }
 
 static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
