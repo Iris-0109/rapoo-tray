@@ -20,6 +20,7 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <uxtheme.h>
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "hid.lib")
@@ -27,6 +28,39 @@ extern "C" {
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "uxtheme.lib")
+
+enum PreferredAppMode {
+    Default,
+    AllowDark,
+    ForceDark,
+    ForceLight,
+    Max
+};
+
+typedef PreferredAppMode (WINAPI *pfnSetPreferredAppMode)(PreferredAppMode);
+typedef BOOL (WINAPI *pfnAllowDarkModeForWindow)(HWND, BOOL);
+typedef void (WINAPI *pfnFlushMenuThemes)();
+
+static pfnSetPreferredAppMode fnSetPreferredAppMode = NULL;
+static pfnAllowDarkModeForWindow fnAllowDarkModeForWindow = NULL;
+static pfnFlushMenuThemes fnFlushMenuThemes = NULL;
+
+static void InitThemeSupport() {
+    HMODULE hUxtheme = LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (hUxtheme) {
+        fnSetPreferredAppMode = (pfnSetPreferredAppMode)GetProcAddress(hUxtheme, MAKEINTRESOURCEA(135));
+        fnAllowDarkModeForWindow = (pfnAllowDarkModeForWindow)GetProcAddress(hUxtheme, MAKEINTRESOURCEA(133));
+        fnFlushMenuThemes = (pfnFlushMenuThemes)GetProcAddress(hUxtheme, MAKEINTRESOURCEA(136));
+
+        if (fnSetPreferredAppMode) {
+            fnSetPreferredAppMode(AllowDark);
+        }
+        if (fnFlushMenuThemes) {
+            fnFlushMenuThemes();
+        }
+    }
+}
 
 #define WM_TRAY_ICON         (WM_USER + 101)
 #define WM_APP_DPI_UPDATE    (WM_USER + 102)
@@ -1113,6 +1147,10 @@ static void ShowContextMenu(HWND hWnd) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"退出");
 
+    if (fnFlushMenuThemes) {
+        fnFlushMenuThemes();
+    }
+
     SetForegroundWindow(hWnd);
     TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
     DestroyMenu(hMenu);
@@ -1183,7 +1221,11 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             UpdateTrayIcon(bat);
             return 0;
         }
-        case WM_SETTINGCHANGE: {
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED: {
+            if (fnFlushMenuThemes) {
+                fnFlushMenuThemes();
+            }
             UpdateTrayIcon(g_battery);
             return 0;
         }
@@ -1206,6 +1248,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         CloseHandle(hMutex);
         return 0;
     }
+
+    InitThemeSupport();
 
     InitializeCriticalSection(&g_csDevIO);
 
@@ -1231,6 +1275,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     RegisterClassExW(&wc);
 
     g_hMainWnd = CreateWindowExW(0, wc.lpszClassName, L"RapooTray", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
+    if (fnAllowDarkModeForWindow) {
+        fnAllowDarkModeForWindow(g_hMainWnd, TRUE);
+    }
+    SetWindowTheme(g_hMainWnd, L"DarkMode_Explorer", NULL);
+
     g_uTaskbarRestartMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
     WNDCLASSEXW wcOsd = {0};
