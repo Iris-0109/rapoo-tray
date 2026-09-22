@@ -11,6 +11,7 @@
 #include <setupapi.h>
 extern "C" {
 #include <hidsdi.h>
+#include <hidpi.h>
 }
 #include <strsafe.h>
 #include <dbt.h>
@@ -38,6 +39,30 @@ extern "C" {
 #define IDM_RECONNECT       2005
 #define IDM_EXIT            2006
 
+// Polling Rate Menu IDs
+#define IDM_POLL_125        2101
+#define IDM_POLL_250        2102
+#define IDM_POLL_500        2103
+#define IDM_POLL_1000       2104
+#define IDM_POLL_2000       2105
+#define IDM_POLL_4000       2106
+#define IDM_POLL_8000       2107
+
+// Performance Mode Menu IDs
+#define IDM_PERF_LOW        2201
+#define IDM_PERF_HP         2202
+#define IDM_PERF_OC         2203
+
+// Sleep Timeout Menu IDs
+#define IDM_SLEEP_2M        2301
+#define IDM_SLEEP_5M        2302
+#define IDM_SLEEP_10M       2303
+#define IDM_SLEEP_30M       2304
+#define IDM_SLEEP_60M       2305
+
+// Sensor Assist Menu IDs
+#define IDM_LINEAR_CORRECT  2401
+
 #define TIMER_OSD_HIDE      3001
 #define TIMER_OSD_FADE      3002
 
@@ -51,10 +76,19 @@ static NOTIFYICONDATAW g_nid = {0};
 static HANDLE g_hHidThread = NULL;
 static HANDLE g_hStopEvent = NULL;
 
+static CRITICAL_SECTION g_csDevIO;
+static HANDLE g_hControlDev = INVALID_HANDLE_VALUE;
+static HANDLE g_hFeatureDev = INVALID_HANDLE_VALUE;
+
 static volatile LONG g_battery = 100;
 static volatile LONG g_dpiLevel = 1;
 static volatile LONG g_dpiX = 1200;
 static volatile LONG g_dpiY = 1200;
+
+static volatile LONG g_currentPollingHz = 1000;
+static volatile LONG g_currentPerfMode = 2; // 1: Low, 2: HP, 5: OC
+static volatile LONG g_currentSleepMin = 10;
+static volatile bool g_linearCorrection = false;
 
 static WCHAR g_osdTextLine1[64] = L"第 1 档  DPI 1200";
 static WCHAR g_osdTextLine2[64] = L"雷柏 VT7  |  电量 100%";
@@ -68,22 +102,23 @@ static volatile bool g_deviceConnected = false;
 
 static void UpdateTrayTooltip();
 static void UpdateTrayIcon(int battery);
+static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2);
 static void ShowOsdNotification(int dpiLevel, int dpiX, int battery);
 static bool IsAutoRunEnabled();
 static void SetAutoRun(bool enable);
 
 // 3x5 font for 16x16: 3 bits per row, 5 rows
 static const uint8_t FONT_3X5[10][5] = {
-    { 0x07, 0x05, 0x05, 0x05, 0x07 }, // '0' (111, 101, 101, 101, 111)
-    { 0x02, 0x06, 0x02, 0x02, 0x07 }, // '1' (010, 110, 010, 010, 111)
-    { 0x07, 0x01, 0x07, 0x04, 0x07 }, // '2' (111, 001, 111, 100, 111)
-    { 0x07, 0x01, 0x07, 0x01, 0x07 }, // '3' (111, 001, 111, 001, 111)
-    { 0x05, 0x05, 0x07, 0x01, 0x01 }, // '4' (101, 101, 111, 001, 001)
-    { 0x07, 0x04, 0x07, 0x01, 0x07 }, // '5' (111, 100, 111, 001, 111)
-    { 0x07, 0x04, 0x07, 0x05, 0x07 }, // '6' (111, 100, 111, 101, 111)
-    { 0x07, 0x01, 0x02, 0x02, 0x02 }, // '7' (111, 001, 010, 010, 010)
-    { 0x07, 0x05, 0x07, 0x05, 0x07 }, // '8' (111, 101, 111, 101, 111)
-    { 0x07, 0x05, 0x07, 0x01, 0x07 }  // '9' (111, 101, 111, 001, 111)
+    { 0x07, 0x05, 0x05, 0x05, 0x07 }, // '0'
+    { 0x02, 0x06, 0x02, 0x02, 0x07 }, // '1'
+    { 0x07, 0x01, 0x07, 0x04, 0x07 }, // '2'
+    { 0x07, 0x01, 0x07, 0x01, 0x07 }, // '3'
+    { 0x05, 0x05, 0x07, 0x01, 0x01 }, // '4'
+    { 0x07, 0x04, 0x07, 0x01, 0x07 }, // '5'
+    { 0x07, 0x04, 0x07, 0x05, 0x07 }, // '6'
+    { 0x07, 0x01, 0x02, 0x02, 0x02 }, // '7'
+    { 0x07, 0x05, 0x07, 0x05, 0x07 }, // '8'
+    { 0x07, 0x05, 0x07, 0x01, 0x07 }  // '9'
 };
 
 // 5x9 font for 20x20 and 24x24: 5 bits per row, 9 rows
@@ -142,9 +177,9 @@ static bool IsSystemDarkTheme() {
     return true; // Default to dark theme
 }
 
-// Generate Win11-style slim battery icon.
-// Rendered at 4x supersampling then box-downsampled, so edges and digits
-// come out anti-aliased instead of fat/pixelated in the tray.
+// Generate Win11-style slim battery icon with 4x supersampling anti-aliasing.
+// When connected: vibrant solid emerald green with exact percentage digits.
+// When disconnected/asleep: elegant dimmed outline with centered dashed line "--".
 static HICON CreateBatteryIcon(int battery) {
     int size = GetTrayIconSize(g_hMainWnd);
     if (size <= 0) size = 16;
@@ -175,13 +210,10 @@ static HICON CreateBatteryIcon(int battery) {
 
     bool isDark = IsSystemDarkTheme();
 
-    // Solid vibrant emerald green background (always green, no tiered color changes):
-    const uint32_t c_fill  = 0xFF2DD773;
+    const uint32_t c_fill  = 0xFF2DD773; // Emerald green
     const uint32_t c_frame = isDark ? 0xFFFFFFFF : 0xFF1E1E1E;
-    // Unified solid black font
     const uint32_t c_digit = 0xFF000000;
 
-    // --- hi-res drawing helpers ---
     auto HiPixel = [&](int x, int y, uint32_t col) {
         if (x >= 0 && x < W && y >= 0 && y < W) hi[y * W + x] = col;
     };
@@ -197,9 +229,6 @@ static HICON CreateBatteryIcon(int battery) {
             }
     };
 
-    // Restored full-size battery geometry:
-    // Strictly aligned to 1x screen pixel boundaries for 100% crisp, razor-sharp edges,
-    // utilizing the full icon area (pad_y=1 for 16x16, filling height 14px and width 16px).
     int pad_y = (size < 20) ? 1 : ((size <= 24) ? 2 : 3);
     int tip_w = (size < 20) ? 2 : ((size <= 24) ? 3 : 4);
     int tip_h = (size < 20) ? 6 : (size / 3);
@@ -210,15 +239,20 @@ static HICON CreateBatteryIcon(int battery) {
     int body_y0 = pad_y * SS;
     int body_y1 = (size - 1 - pad_y) * SS + (SS - 1);
 
-    int frame_t = 1 * SS; // Exact 1.0 screen pixel border (razor-sharp)
-    int radius  = 2 * SS; // 0.5 screen pixel subtle anti-aliased corner
+    int frame_t = 1 * SS; // 1.0 screen pixel border
+    int radius  = 2 * SS;
 
     FillRoundRect(body_x0, body_y0, body_x1, body_y1, c_frame, radius);
-    // Fill entire battery cavity with solid vibrant emerald green:
-    FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
-                  body_x1 - frame_t, body_y1 - frame_t, c_fill, (radius > frame_t ? radius - frame_t : 0));
 
-    // Positive terminal tip (fully aligned to screen pixels):
+    if (g_deviceConnected) {
+        FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
+                      body_x1 - frame_t, body_y1 - frame_t, c_fill, (radius > frame_t ? radius - frame_t : 0));
+    } else {
+        uint32_t c_dim = isDark ? 0x30606060 : 0x30B0B0B0;
+        FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
+                      body_x1 - frame_t, body_y1 - frame_t, c_dim, (radius > frame_t ? radius - frame_t : 0));
+    }
+
     int tip_x0 = (size - tip_w) * SS;
     int tip_x1 = size * SS - 1;
     int tip_y0 = tip_y * SS;
@@ -231,18 +265,30 @@ static HICON CreateBatteryIcon(int battery) {
     int in_w  = in_x1 - in_x0 + 1;
     int in_h  = (body_y1 - frame_t) - in_y0 + 1;
 
-    char s[8];
-    snprintf(s, sizeof(s), "%d", battery);
-    int len = (int)strlen(s);
+    if (!g_deviceConnected) {
+        // Draw centered dashed line "--" for offline / sleep state
+        uint32_t c_dash = isDark ? 0xFFBBBBBB : 0xFF666666;
+        int dash_w = (size < 20) ? 3 * SS : 4 * SS;
+        int dash_h = (size < 20) ? 1 * SS : 2 * SS;
+        int gap = 2 * SS;
+        int total_w = 2 * dash_w + gap;
+        int sx = in_x0 + (in_w - total_w) / 2;
+        int sy = in_y0 + (in_h - dash_h) / 2;
+        for (int y = 0; y < dash_h; ++y) {
+            for (int x = 0; x < dash_w; ++x) {
+                HiPixel(sx + x, sy + y, c_dash);
+                HiPixel(sx + dash_w + gap + x, sy + y, c_dash);
+            }
+        }
+    } else {
+        char s[8];
+        snprintf(s, sizeof(s), "%d", battery);
+        int len = (int)strlen(s);
 
-    {
-        // font metrics (font pixels)
         const int fw = (size < 20) ? 3 : 5;
         const int fh = (size < 20) ? 5 : 9;
+        int gap_fp = (len == 1) ? 0 : 1;
 
-        int gap_fp = (len == 1) ? 0 : 1; // 1 font-pixel gap between digits
-
-        // Set font height to ~70% of inner cavity height (step up to scale = 6, 7.5px)
         int target_h = in_h * 70 / 100;
         int scale = target_h / fh;
         if (scale < 1) scale = 1;
@@ -284,7 +330,6 @@ static HICON CreateBatteryIcon(int battery) {
         };
 
         if (battery == 100 && size < 20) {
-            // "00" with a leading 1 bar, 3x5 font
             int cur = sx;
             for (int t = 0; t < scale + bold_w; ++t)
                 for (int r = 0; r < text_h; ++r)
@@ -296,7 +341,6 @@ static HICON CreateBatteryIcon(int battery) {
             cur += 3 * scale + bold_w + gap_fp * scale;
             DrawDigitScaled(rows5, 3, 5, cur, sy, scale);
         } else if (battery == 100) {
-            // "00" with a leading 1 bar, 4x9 font
             int cur = sx;
             for (int t = 0; t < 2 * scale + bold_w; ++t)
                 for (int r = 0; r < text_h; ++r)
@@ -323,7 +367,6 @@ static HICON CreateBatteryIcon(int battery) {
         }
     }
 
-    // --- box downsample SSx -> 1x (alpha-weighted average = anti-aliasing) ---
     BITMAPINFO bomi = {0};
     bomi.bmiHeader = bmi.bmiHeader;
     bomi.bmiHeader.biWidth = size;
@@ -349,25 +392,26 @@ static HICON CreateBatteryIcon(int battery) {
                     if (a > 0) {
                         sumA += a;
                         sumR += (c >> 16) & 0xFF;
-                        sumG += (c >> 8) & 0xFF;
-                        sumB += (c & 0xFF);
+                        sumG += (c >>  8) & 0xFF;
+                        sumB += (c      ) & 0xFF;
                     }
                 }
             }
-            uint32_t a = sumA / SS2;
-            if (a < 8) {
+            uint8_t avgA = (uint8_t)(sumA / SS2);
+            if (avgA == 0) {
                 out[y * size + x] = 0;
             } else {
-                uint32_t r = sumR / SS2;
-                uint32_t g = sumG / SS2;
-                uint32_t b = sumB / SS2;
-                out[y * size + x] = (a << 24) | (r << 16) | (g << 8) | b;
+                uint8_t avgR = (uint8_t)(sumR / SS2);
+                uint8_t avgG = (uint8_t)(sumG / SS2);
+                uint8_t avgB = (uint8_t)(sumB / SS2);
+                uint8_t prR = (uint8_t)((avgR * avgA) / 255);
+                uint8_t prG = (uint8_t)((avgG * avgA) / 255);
+                uint8_t prB = (uint8_t)((avgB * avgA) / 255);
+                out[y * size + x] = ((uint32_t)avgA << 24) | ((uint32_t)prR << 16) | ((uint32_t)prG << 8) | (uint32_t)prB;
             }
         }
     }
 
-    // Windows monochrome 1bpp mask: 1 = Transparent, 0 = Opaque.
-    // Row width must be WORD (2-byte) aligned.
     int maskPitch = ((size + 15) / 16) * 2;
     BYTE maskBits[256] = {0};
     for (int y = 0; y < size; ++y) {
@@ -401,17 +445,19 @@ static void UpdateTrayTooltip() {
         StringCchPrintfW(
             g_nid.szTip,
             ARRAYSIZE(g_nid.szTip),
-            L"%s\n电量: %d%%\nDPI: %d (第 %d 档)",
+            L"%s\n电量: %d%%\nDPI: %d (第 %d 档)\n回报率: %d Hz",
             g_detectedModel,
             g_battery,
             g_dpiX,
-            g_dpiLevel
+            g_dpiLevel,
+            g_currentPollingHz
         );
     } else {
         StringCchPrintfW(
             g_nid.szTip,
             ARRAYSIZE(g_nid.szTip),
-            L"rapoo-tray\n(等待设备连接...)"
+            L"%s\n(鼠标已休眠或未连接)",
+            g_detectedModel
         );
     }
 }
@@ -429,7 +475,7 @@ static void UpdateTrayIcon(int battery) {
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
-// OSD Floating Window Procedure with Double-Buffering and Transparency
+// OSD Window Procedure
 static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_ERASEBKGND:
@@ -444,58 +490,47 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
             HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
 
-            // Fill transparent color key
             HBRUSH hBrKey = CreateSolidBrush(OSD_KEY_COLOR);
             FillRect(memDC, &rc, hBrKey);
             DeleteObject(hBrKey);
 
-            // Modern Dark Floating Pill
-            RECT rcBox = rc;
-            InflateRect(&rcBox, -2, -2);
-            HBRUSH hBg = CreateSolidBrush(RGB(24, 26, 32));
-            HPEN hBorder = CreatePen(PS_SOLID, 1, RGB(70, 75, 90));
-            HGDIOBJ oldBr = SelectObject(memDC, hBg);
-            HGDIOBJ oldPen = SelectObject(memDC, hBorder);
-            RoundRect(memDC, rcBox.left, rcBox.top, rcBox.right, rcBox.bottom, 22, 22);
+            HBRUSH hBrBg = CreateSolidBrush(RGB(24, 24, 28));
+            HPEN hPenBorder = CreatePen(PS_SOLID, 1, RGB(55, 55, 62));
+            HGDIOBJ oldBrush = SelectObject(memDC, hBrBg);
+            HGDIOBJ oldPen = SelectObject(memDC, hPenBorder);
+
+            RoundRect(memDC, 2, 2, rc.right - 2, rc.bottom - 2, 14, 14);
+
+            SelectObject(memDC, oldBrush);
+            SelectObject(memDC, oldPen);
+            DeleteObject(hBrBg);
+            DeleteObject(hPenBorder);
 
             SetBkMode(memDC, TRANSPARENT);
 
-            // Level + DPI Value (Prominent Bold Font)
-            HFONT hFontBig = CreateFontW(
-                -24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
-            );
-            HGDIOBJ oldFont = SelectObject(memDC, hFontBig);
+            HFONT hFont1 = CreateFontW(-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HFONT hFont2 = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+            RECT rcText1 = { 16, 14, rc.right - 16, 38 };
+            HGDIOBJ oldFont = SelectObject(memDC, hFont1);
             SetTextColor(memDC, RGB(255, 255, 255));
-            RECT rcTop = rcBox;
-            rcTop.bottom = rcBox.top + 42;
-            DrawTextW(memDC, g_osdTextLine1, -1, &rcTop, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(memDC, g_osdTextLine1, -1, &rcText1, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-            // Subtitle (Model + Battery in Cyan)
-            HFONT hFontSub = CreateFontW(
-                -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
-            );
-            SelectObject(memDC, hFontSub);
-            SetTextColor(memDC, RGB(130, 215, 255));
-            RECT rcBot = rcBox;
-            rcBot.top = rcBox.top + 40;
-            DrawTextW(memDC, g_osdTextLine2, -1, &rcBot, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+            RECT rcText2 = { 16, 40, rc.right - 16, 62 };
+            SelectObject(memDC, hFont2);
+            SetTextColor(memDC, RGB(160, 160, 170));
+            DrawTextW(memDC, g_osdTextLine2, -1, &rcText2, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
             SelectObject(memDC, oldFont);
-            SelectObject(memDC, oldPen);
-            SelectObject(memDC, oldBr);
+            DeleteObject(hFont1);
+            DeleteObject(hFont2);
+
+            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
             SelectObject(memDC, oldBmp);
             DeleteObject(memBmp);
             DeleteDC(memDC);
-            DeleteObject(hFontBig);
-            DeleteObject(hFontSub);
-            DeleteObject(hBorder);
-            DeleteObject(hBg);
 
             EndPaint(hWnd, &ps);
             return 0;
@@ -521,11 +556,11 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 }
 
-static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
+static void ShowCustomOsd(const WCHAR* line1, const WCHAR* line2) {
     if (!g_hOsdWnd) return;
 
-    StringCchPrintfW(g_osdTextLine1, ARRAYSIZE(g_osdTextLine1), L"第 %d 档  DPI %d", dpiLevel, dpiX);
-    StringCchPrintfW(g_osdTextLine2, ARRAYSIZE(g_osdTextLine2), L"%s  |  电量 %d%%", g_detectedModel, battery);
+    StringCchCopyW(g_osdTextLine1, ARRAYSIZE(g_osdTextLine1), line1);
+    StringCchCopyW(g_osdTextLine2, ARRAYSIZE(g_osdTextLine2), line2);
 
     RECT rcWork;
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0)) {
@@ -549,8 +584,201 @@ static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
     SetTimer(g_hOsdWnd, TIMER_OSD_HIDE, 1400, NULL);
 }
 
-// Find Rapoo col09 device path dynamically and identify hardware model
-static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, DWORD maxModelLen) {
+static void ShowOsdNotification(int dpiLevel, int dpiX, int battery) {
+    WCHAR l1[64], l2[64];
+    StringCchPrintfW(l1, ARRAYSIZE(l1), L"第 %d 档  DPI %d", dpiLevel, dpiX);
+    StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  电量 %d%%", g_detectedModel, battery);
+    ShowCustomOsd(l1, l2);
+}
+
+// --------------------------------------------------------------------------
+// Rapoo Hardware Protocol Implementation (A5A5 Write, A5A4 Read)
+// --------------------------------------------------------------------------
+
+// Sends 33-byte output report (Report ID = 6) to Usage 14 endpoint
+static bool SendRapooCommand(BYTE bank, BYTE addr, const BYTE* pData, int dataLen) {
+    EnterCriticalSection(&g_csDevIO);
+    if (g_hControlDev == INVALID_HANDLE_VALUE) {
+        LeaveCriticalSection(&g_csDevIO);
+        return false;
+    }
+
+    BYTE buf[33] = {0};
+    buf[0] = 0x06; // Output Report ID = 6
+    buf[1] = 0xA5;
+    buf[2] = 0xA5;
+    buf[3] = (BYTE)(dataLen & 0xFF);
+    buf[4] = addr;
+    buf[5] = bank;
+    buf[6] = 0x00;
+    buf[7] = 0x00;
+    if (pData && dataLen > 0) {
+        memcpy(&buf[8], pData, (dataLen > 25) ? 25 : dataLen);
+    }
+
+    DWORD written = 0;
+    OVERLAPPED ov = {0};
+    ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    BOOL ok = WriteFile(g_hControlDev, buf, 33, &written, &ov);
+    if (!ok && GetLastError() == ERROR_IO_PENDING) {
+        if (WaitForSingleObject(ov.hEvent, 1000) == WAIT_OBJECT_0) {
+            GetOverlappedResult(g_hControlDev, &ov, &written, FALSE);
+            ok = (written == 33);
+        } else {
+            CancelIo(g_hControlDev);
+            ok = FALSE;
+        }
+    }
+    CloseHandle(ov.hEvent);
+    LeaveCriticalSection(&g_csDevIO);
+    return (ok && written == 33);
+}
+
+// Active Ping to check if mouse is awake and get current settings
+static bool PingRapooDevice() {
+    EnterCriticalSection(&g_csDevIO);
+    if (g_hControlDev == INVALID_HANDLE_VALUE || g_hFeatureDev == INVALID_HANDLE_VALUE) {
+        LeaveCriticalSection(&g_csDevIO);
+        return false;
+    }
+
+    // Query Polling Rate register: A5 A4 01 80 08 00 00 00
+    BYTE outBuf[33] = {0};
+    outBuf[0] = 0x06; // Report ID
+    outBuf[1] = 0xA5;
+    outBuf[2] = 0xA4;
+    outBuf[3] = 0x01; // Len = 1
+    outBuf[4] = 0x80; // Addr = 0x80 (pollingHz)
+    outBuf[5] = 0x08; // Bank = 0x08 (SYSTEM)
+
+    DWORD written = 0;
+    OVERLAPPED ov = {0};
+    ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    BOOL wOk = WriteFile(g_hControlDev, outBuf, 33, &written, &ov);
+    if (!wOk && GetLastError() == ERROR_IO_PENDING) {
+        if (WaitForSingleObject(ov.hEvent, 500) == WAIT_OBJECT_0) {
+            GetOverlappedResult(g_hControlDev, &ov, &written, FALSE);
+            wOk = (written == 33);
+        } else {
+            CancelIo(g_hControlDev);
+            wOk = FALSE;
+        }
+    }
+    CloseHandle(ov.hEvent);
+
+    if (!wOk) {
+        LeaveCriticalSection(&g_csDevIO);
+        return false;
+    }
+
+    Sleep(25);
+
+    // Read response via Feature Report ID = 8
+    BYTE featBuf[33] = {0};
+    featBuf[0] = 0x08;
+    BOOL fOk = HidD_GetFeature(g_hFeatureDev, featBuf, 33);
+    if (fOk) {
+        BYTE pollCode = featBuf[0];
+        int hz = 1000;
+        switch (pollCode) {
+            case 0x08: hz = 125; break;
+            case 0x04: hz = 250; break;
+            case 0x02: hz = 500; break;
+            case 0x01: hz = 1000; break;
+            case 0x84: hz = 2000; break;
+            case 0x82: hz = 4000; break;
+            case 0x81: hz = 8000; break;
+        }
+        InterlockedExchange(&g_currentPollingHz, hz);
+    }
+
+    LeaveCriticalSection(&g_csDevIO);
+    return (fOk != FALSE);
+}
+
+static void SetPollingRate(int hz) {
+    BYTE code = 0x01;
+    switch (hz) {
+        case 125:  code = 0x08; break;
+        case 250:  code = 0x04; break;
+        case 500:  code = 0x02; break;
+        case 1000: code = 0x01; break;
+        case 2000: code = 0x84; break;
+        case 4000: code = 0x82; break;
+        case 8000: code = 0x81; break;
+        default:   code = 0x01; hz = 1000; break;
+    }
+
+    if (SendRapooCommand(0x08, 0x80, &code, 1)) {
+        InterlockedExchange(&g_currentPollingHz, hz);
+        UpdateTrayTooltip();
+        Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+
+        WCHAR l1[64], l2[64];
+        StringCchPrintfW(l1, ARRAYSIZE(l1), L"回报率: %d Hz", hz);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  设置已生效", g_detectedModel);
+        ShowCustomOsd(l1, l2);
+    }
+}
+
+static void SetPerformanceMode(int mode) {
+    // Determine target register address based on current polling rate
+    int hz = (int)g_currentPollingHz;
+    BYTE addr = 0xDF; // 1000Hz default
+    switch (hz) {
+        case 125:  addr = 0xDC; break;
+        case 250:  addr = 0xDD; break;
+        case 500:  addr = 0xDE; break;
+        case 1000: addr = 0xDF; break;
+        case 2000: addr = 0xE0; break;
+        case 4000: addr = 0xE1; break;
+        case 8000: addr = 0xE2; break;
+    }
+
+    BYTE code = (BYTE)mode; // 1: Low, 2: HP, 5: OC
+    if (SendRapooCommand(0x08, addr, &code, 1)) {
+        InterlockedExchange(&g_currentPerfMode, mode);
+
+        const WCHAR* pName = (mode == 1) ? L"低功耗续航模式" : ((mode == 5) ? L"狂暴超频模式 (OC)" : L"竞技模式 (标准 HP)");
+        WCHAR l1[64], l2[64];
+        StringCchPrintfW(l1, ARRAYSIZE(l1), L"%s", pName);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  性能模式已切换", g_detectedModel);
+        ShowCustomOsd(l1, l2);
+    }
+}
+
+static void SetSleepTimeout(int minutes) {
+    if (minutes < 2) minutes = 2;
+    if (minutes > 120) minutes = 120;
+    BYTE code = (BYTE)minutes;
+
+    if (SendRapooCommand(0x08, 0xC2, &code, 1)) {
+        InterlockedExchange(&g_currentSleepMin, minutes);
+
+        WCHAR l1[64], l2[64];
+        StringCchPrintfW(l1, ARRAYSIZE(l1), L"休眠超时: %d 分钟", minutes);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  省电策略已更新", g_detectedModel);
+        ShowCustomOsd(l1, l2);
+    }
+}
+
+static void SetLinearCorrection(bool enable) {
+    BYTE code = enable ? 0x00 : 0x01; // Bit0: 0 = On, 1 = Off
+    if (SendRapooCommand(0x08, 0xC3, &code, 1)) {
+        g_linearCorrection = enable;
+
+        WCHAR l1[64], l2[64];
+        StringCchPrintfW(l1, ARRAYSIZE(l1), L"直线修正: %s", enable ? L"已开启" : L"已关闭");
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  传感器配置已应用", g_detectedModel);
+        ShowCustomOsd(l1, l2);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Multi-Endpoint Device Enumeration via HID Caps
+// --------------------------------------------------------------------------
+
+static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pathFeature, WCHAR* outModel, DWORD maxModelLen) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
 
@@ -560,7 +788,12 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
     SP_DEVICE_INTERFACE_DATA devData = {0};
     devData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
 
+    pathStatus[0] = 0;
+    pathControl[0] = 0;
+    pathFeature[0] = 0;
+
     bool found = false;
+
     for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
         DWORD reqSize = 0;
         SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
@@ -575,28 +808,65 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
             StringCchCopyW(lowerPath, MAX_PATH, pDetail->DevicePath);
             _wcslwr_s(lowerPath, MAX_PATH);
 
-            if (wcsstr(lowerPath, L"vid_24ae") && 
-               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1411") || wcsstr(lowerPath, L"pid_1410")) && 
-                wcsstr(lowerPath, L"col09")) {
-                StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
-                found = true;
+            if (wcsstr(lowerPath, L"vid_24ae")) {
+                HANDLE hProbe = CreateFileW(
+                    pDetail->DevicePath,
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+                if (hProbe == INVALID_HANDLE_VALUE) {
+                    hProbe = CreateFileW(
+                        pDetail->DevicePath,
+                        GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL
+                    );
+                }
 
+                if (hProbe != INVALID_HANDLE_VALUE) {
+                    PHIDP_PREPARSED_DATA pData = NULL;
+                    if (HidD_GetPreparsedData(hProbe, &pData)) {
+                        HIDP_CAPS caps;
+                        if (HidP_GetCaps(pData, &caps) == HIDP_STATUS_SUCCESS) {
+                            if (caps.UsagePage == 0xFF00) {
+                                if (caps.Usage == 0x0002 || (caps.InputReportByteLength == 19 && wcsstr(lowerPath, L"col09"))) {
+                                    StringCchCopyW(pathStatus, MAX_PATH, pDetail->DevicePath);
+                                    found = true;
+                                } else if (caps.Usage == 0x000E && caps.OutputReportByteLength == 33) {
+                                    StringCchCopyW(pathControl, MAX_PATH, pDetail->DevicePath);
+                                } else if (caps.Usage == 0x000F && caps.FeatureReportByteLength == 33) {
+                                    StringCchCopyW(pathFeature, MAX_PATH, pDetail->DevicePath);
+                                }
+                            }
+                        }
+                        HidD_FreePreparsedData(pData);
+                    }
+                    CloseHandle(hProbe);
+                }
+
+                // Detect hardware model name from PID
                 if (outModel && maxModelLen > 0) {
                     if (wcsstr(lowerPath, L"pid_1460")) {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7");
                     } else if (wcsstr(lowerPath, L"pid_4660")) {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7 (有线)");
-                    } else if (wcsstr(lowerPath, L"pid_1411")) {
-                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S (有线)");
-                    } else if (wcsstr(lowerPath, L"pid_1410")) {
+                    } else if (wcsstr(lowerPath, L"pid_1406") || wcsstr(lowerPath, L"pid_1410")) {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S");
+                    } else if (wcsstr(lowerPath, L"pid_4606") || wcsstr(lowerPath, L"pid_1411")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S (有线)");
+                    } else if (wcsstr(lowerPath, L"pid_1412") || wcsstr(lowerPath, L"pid_1413") || wcsstr(lowerPath, L"pid_1440")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT9 系列");
                     } else {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏无线鼠标");
                     }
                 }
-
-                free(pDetail);
-                break;
             }
         }
         free(pDetail);
@@ -606,23 +876,25 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
     return found;
 }
 
-// Low-overhead background reader thread
+// Background worker thread for low-overhead HID monitoring & active heartbeats
 static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
-    WCHAR devPath[MAX_PATH] = {0};
+    WCHAR pathStatus[MAX_PATH] = {0};
+    WCHAR pathControl[MAX_PATH] = {0};
+    WCHAR pathFeature[MAX_PATH] = {0};
     WCHAR modelBuf[64] = {0};
 
     while (WaitForSingleObject(g_hStopEvent, 200) == WAIT_TIMEOUT) {
-        if (!FindRapooReportPath(devPath, MAX_PATH, modelBuf, 64)) {
+        if (!FindRapooEndpoints(pathStatus, pathControl, pathFeature, modelBuf, 64)) {
             if (g_deviceConnected) {
                 g_deviceConnected = false;
-                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, 0, 0);
             }
             Sleep(1500);
             continue;
         }
 
-        HANDLE hDev = CreateFileW(
-            devPath,
+        HANDLE hStatus = CreateFileW(
+            pathStatus,
             GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             NULL,
@@ -631,18 +903,47 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             NULL
         );
 
-        if (hDev == INVALID_HANDLE_VALUE) {
+        if (hStatus == INVALID_HANDLE_VALUE) {
             if (g_deviceConnected) {
                 g_deviceConnected = false;
-                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, 0, 0);
             }
             Sleep(1500);
             continue;
         }
 
+        // Open bidirectional control and feature endpoints
+        EnterCriticalSection(&g_csDevIO);
+        if (pathControl[0]) {
+            g_hControlDev = CreateFileW(
+                pathControl,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                NULL
+            );
+        }
+        if (pathFeature[0]) {
+            g_hFeatureDev = CreateFileW(
+                pathFeature,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            );
+        }
+        LeaveCriticalSection(&g_csDevIO);
+
         StringCchCopyW(g_detectedModel, ARRAYSIZE(g_detectedModel), modelBuf);
         g_deviceConnected = true;
         PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+
+        // Ping device on startup to sync current hardware polling rate
+        PingRapooDevice();
 
         HANDLE hReadEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         OVERLAPPED ov = {0};
@@ -656,21 +957,37 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
 
         while (WaitForSingleObject(g_hStopEvent, 0) == WAIT_TIMEOUT) {
             ResetEvent(hReadEvent);
-            BOOL ok = ReadFile(hDev, buf, 65, &bytesRead, &ov);
+            BOOL ok = ReadFile(hStatus, buf, 19, &bytesRead, &ov);
             if (!ok) {
                 DWORD err = GetLastError();
                 if (err == ERROR_IO_PENDING) {
                     HANDLE waitHandles[2] = { g_hStopEvent, hReadEvent };
-                    DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+                    // 3500ms timeout for active heartbeat probe
+                    DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, 3500);
                     if (waitRes == WAIT_OBJECT_0) {
-                        CancelIo(hDev);
+                        CancelIo(hStatus);
                         break;
+                    } else if (waitRes == WAIT_TIMEOUT) {
+                        // Heartbeat check: actively query device status
+                        bool alive = PingRapooDevice();
+                        if (!alive) {
+                            if (g_deviceConnected) {
+                                g_deviceConnected = false;
+                                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, 0, 0);
+                            }
+                        } else {
+                            if (!g_deviceConnected) {
+                                g_deviceConnected = true;
+                                PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+                            }
+                        }
+                        continue;
                     } else if (waitRes == WAIT_OBJECT_0 + 1) {
-                        if (!GetOverlappedResult(hDev, &ov, &bytesRead, FALSE)) {
+                        if (!GetOverlappedResult(hStatus, &ov, &bytesRead, FALSE)) {
                             break;
                         }
                     } else {
-                        CancelIo(hDev);
+                        CancelIo(hStatus);
                         break;
                     }
                 } else {
@@ -695,6 +1012,10 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 InterlockedExchange(&g_dpiY, dpiy);
                 InterlockedExchange(&g_battery, bat);
 
+                if (!g_deviceConnected) {
+                    g_deviceConnected = true;
+                }
+
                 if (dpiChanged) {
                     PostMessageW(g_hMainWnd, WM_APP_DPI_UPDATE, (WPARAM)level, (LPARAM)dpix);
                 }
@@ -709,10 +1030,22 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         }
 
         g_deviceConnected = false;
-        PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, (WPARAM)g_battery, 0);
+        PostMessageW(g_hMainWnd, WM_APP_BAT_UPDATE, 0, 0);
 
         CloseHandle(hReadEvent);
-        CloseHandle(hDev);
+        CloseHandle(hStatus);
+
+        EnterCriticalSection(&g_csDevIO);
+        if (g_hControlDev != INVALID_HANDLE_VALUE) {
+            CloseHandle(g_hControlDev);
+            g_hControlDev = INVALID_HANDLE_VALUE;
+        }
+        if (g_hFeatureDev != INVALID_HANDLE_VALUE) {
+            CloseHandle(g_hFeatureDev);
+            g_hFeatureDev = INVALID_HANDLE_VALUE;
+        }
+        LeaveCriticalSection(&g_csDevIO);
+
         Sleep(1000);
     }
 
@@ -746,6 +1079,7 @@ static void SetAutoRun(bool enable) {
     }
 }
 
+// Right-Click Context Menu & Control Panel
 static void ShowContextMenu(HWND hWnd) {
     POINT pt;
     GetCursorPos(&pt);
@@ -756,11 +1090,11 @@ static void ShowContextMenu(HWND hWnd) {
     WCHAR bufDpi[64];
 
     if (g_deviceConnected) {
-        StringCchPrintfW(bufHeader, 64, L"%s", g_detectedModel);
+        StringCchPrintfW(bufHeader, 64, L"%s (已连接)", g_detectedModel);
         StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
         StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
     } else {
-        StringCchPrintfW(bufHeader, 64, L"rapoo-tray (未连接)");
+        StringCchPrintfW(bufHeader, 64, L"%s (休眠 / 未连接)", g_detectedModel);
         StringCchPrintfW(bufBat, 64, L"电池电量: --");
         StringCchPrintfW(bufDpi, 64, L"当前 DPI: --");
     }
@@ -769,6 +1103,40 @@ static void ShowContextMenu(HWND hWnd) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_BATTERY, bufBat);
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_DPI, bufDpi);
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    // Submenu 1: Polling Rate
+    HMENU hSubPoll = CreatePopupMenu();
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 125 ? MF_CHECKED : 0), IDM_POLL_125, L"125 Hz");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 250 ? MF_CHECKED : 0), IDM_POLL_250, L"250 Hz");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 500 ? MF_CHECKED : 0), IDM_POLL_500, L"500 Hz");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 1000 ? MF_CHECKED : 0), IDM_POLL_1000, L"1000 Hz (默认标准)");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 2000 ? MF_CHECKED : 0), IDM_POLL_2000, L"2000 Hz");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 4000 ? MF_CHECKED : 0), IDM_POLL_4000, L"4000 Hz");
+    AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 8000 ? MF_CHECKED : 0), IDM_POLL_8000, L"8000 Hz (电竞高刷)");
+    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubPoll, L"回报率设置");
+
+    // Submenu 2: Performance Mode
+    HMENU hSubPerf = CreatePopupMenu();
+    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 1 ? MF_CHECKED : 0), IDM_PERF_LOW, L"低功耗模式 (长续航)");
+    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 2 ? MF_CHECKED : 0), IDM_PERF_HP, L"竞技模式 (标准 HP)");
+    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 5 ? MF_CHECKED : 0), IDM_PERF_OC, L"狂暴超频模式 (OC)");
+    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubPerf, L"性能模式");
+
+    // Submenu 3: Sleep Timeout
+    HMENU hSubSleep = CreatePopupMenu();
+    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 2 ? MF_CHECKED : 0), IDM_SLEEP_2M, L"2 分钟");
+    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 5 ? MF_CHECKED : 0), IDM_SLEEP_5M, L"5 分钟");
+    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 10 ? MF_CHECKED : 0), IDM_SLEEP_10M, L"10 分钟 (推荐)");
+    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 30 ? MF_CHECKED : 0), IDM_SLEEP_30M, L"30 分钟");
+    AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 60 ? MF_CHECKED : 0), IDM_SLEEP_60M, L"60 分钟");
+    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubSleep, L"休眠时间");
+
+    // Submenu 4: Sensor Assist
+    HMENU hSubSensor = CreatePopupMenu();
+    AppendMenuW(hSubSensor, MF_STRING | (g_linearCorrection ? MF_CHECKED : 0), IDM_LINEAR_CORRECT, L"直线修正 (Angle Snapping)");
+    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubSensor, L"传感器辅助");
+
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     UINT autoRunFlags = MF_STRING | (IsAutoRunEnabled() ? MF_CHECKED : MF_UNCHECKED);
@@ -813,6 +1181,26 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     g_hHidThread = CreateThread(NULL, 0, HidWorkerThread, NULL, 0, NULL);
                     break;
                 }
+                case IDM_POLL_125:  SetPollingRate(125);  break;
+                case IDM_POLL_250:  SetPollingRate(250);  break;
+                case IDM_POLL_500:  SetPollingRate(500);  break;
+                case IDM_POLL_1000: SetPollingRate(1000); break;
+                case IDM_POLL_2000: SetPollingRate(2000); break;
+                case IDM_POLL_4000: SetPollingRate(4000); break;
+                case IDM_POLL_8000: SetPollingRate(8000); break;
+
+                case IDM_PERF_LOW:  SetPerformanceMode(1); break;
+                case IDM_PERF_HP:   SetPerformanceMode(2); break;
+                case IDM_PERF_OC:   SetPerformanceMode(5); break;
+
+                case IDM_SLEEP_2M:  SetSleepTimeout(2);  break;
+                case IDM_SLEEP_5M:  SetSleepTimeout(5);  break;
+                case IDM_SLEEP_10M: SetSleepTimeout(10); break;
+                case IDM_SLEEP_30M: SetSleepTimeout(30); break;
+                case IDM_SLEEP_60M: SetSleepTimeout(60); break;
+
+                case IDM_LINEAR_CORRECT: SetLinearCorrection(!g_linearCorrection); break;
+
                 case IDM_EXIT: {
                     DestroyWindow(hWnd);
                     break;
@@ -856,6 +1244,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         CloseHandle(hMutex);
         return 0;
     }
+
+    InitializeCriticalSection(&g_csDevIO);
 
     // Enable modern Per-Monitor V2 DPI awareness
     HMODULE hUser = GetModuleHandleW(L"user32.dll");
@@ -934,6 +1324,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DestroyWindow(g_hOsdWnd);
     }
 
+    DeleteCriticalSection(&g_csDevIO);
     CloseHandle(hMutex);
     return (int)msg.wParam;
 }
