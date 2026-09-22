@@ -35,9 +35,10 @@ extern "C" {
 #define IDM_HEADER          2001
 #define IDM_BATTERY         2002
 #define IDM_DPI             2003
-#define IDM_AUTORUN         2004
-#define IDM_RECONNECT       2005
-#define IDM_EXIT            2006
+#define IDM_POLL_INFO       2004
+#define IDM_AUTORUN         2005
+#define IDM_RECONNECT       2006
+#define IDM_EXIT            2007
 
 // Polling Rate Menu IDs
 #define IDM_POLL_125        2101
@@ -48,20 +49,12 @@ extern "C" {
 #define IDM_POLL_4000       2106
 #define IDM_POLL_8000       2107
 
-// Performance Mode Menu IDs
-#define IDM_PERF_LOW        2201
-#define IDM_PERF_HP         2202
-#define IDM_PERF_OC         2203
-
 // Sleep Timeout Menu IDs
 #define IDM_SLEEP_2M        2301
 #define IDM_SLEEP_5M        2302
 #define IDM_SLEEP_10M       2303
 #define IDM_SLEEP_30M       2304
 #define IDM_SLEEP_60M       2305
-
-// Sensor Assist Menu IDs
-#define IDM_LINEAR_CORRECT  2401
 
 #define TIMER_OSD_HIDE      3001
 #define TIMER_OSD_FADE      3002
@@ -86,9 +79,7 @@ static volatile LONG g_dpiX = 1200;
 static volatile LONG g_dpiY = 1200;
 
 static volatile LONG g_currentPollingHz = 1000;
-static volatile LONG g_currentPerfMode = 2; // 1: Low, 2: HP, 5: OC
 static volatile LONG g_currentSleepMin = 10;
-static volatile bool g_linearCorrection = false;
 
 static WCHAR g_osdTextLine1[64] = L"第 1 档  DPI 1200";
 static WCHAR g_osdTextLine2[64] = L"雷柏 VT7  |  电量 100%";
@@ -476,6 +467,7 @@ static void UpdateTrayIcon(int battery) {
 }
 
 // OSD Window Procedure
+// OSD Floating Window Procedure with Double-Buffering and Transparency
 static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_ERASEBKGND:
@@ -490,47 +482,58 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
             HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
 
+            // Fill transparent color key
             HBRUSH hBrKey = CreateSolidBrush(OSD_KEY_COLOR);
             FillRect(memDC, &rc, hBrKey);
             DeleteObject(hBrKey);
 
-            HBRUSH hBrBg = CreateSolidBrush(RGB(24, 24, 28));
-            HPEN hPenBorder = CreatePen(PS_SOLID, 1, RGB(55, 55, 62));
-            HGDIOBJ oldBrush = SelectObject(memDC, hBrBg);
-            HGDIOBJ oldPen = SelectObject(memDC, hPenBorder);
-
-            RoundRect(memDC, 2, 2, rc.right - 2, rc.bottom - 2, 14, 14);
-
-            SelectObject(memDC, oldBrush);
-            SelectObject(memDC, oldPen);
-            DeleteObject(hBrBg);
-            DeleteObject(hPenBorder);
+            // Modern Dark Floating Pill
+            RECT rcBox = rc;
+            InflateRect(&rcBox, -2, -2);
+            HBRUSH hBg = CreateSolidBrush(RGB(24, 26, 32));
+            HPEN hBorder = CreatePen(PS_SOLID, 1, RGB(70, 75, 90));
+            HGDIOBJ oldBr = SelectObject(memDC, hBg);
+            HGDIOBJ oldPen = SelectObject(memDC, hBorder);
+            RoundRect(memDC, rcBox.left, rcBox.top, rcBox.right, rcBox.bottom, 22, 22);
 
             SetBkMode(memDC, TRANSPARENT);
 
-            HFONT hFont1 = CreateFontW(-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            HFONT hFont2 = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-
-            RECT rcText1 = { 16, 14, rc.right - 16, 38 };
-            HGDIOBJ oldFont = SelectObject(memDC, hFont1);
+            // Level + DPI Value (Prominent Bold Font)
+            HFONT hFontBig = CreateFontW(
+                -24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
+            );
+            HGDIOBJ oldFont = SelectObject(memDC, hFontBig);
             SetTextColor(memDC, RGB(255, 255, 255));
-            DrawTextW(memDC, g_osdTextLine1, -1, &rcText1, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            RECT rcTop = rcBox;
+            rcTop.bottom = rcBox.top + 42;
+            DrawTextW(memDC, g_osdTextLine1, -1, &rcTop, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            RECT rcText2 = { 16, 40, rc.right - 16, 62 };
-            SelectObject(memDC, hFont2);
-            SetTextColor(memDC, RGB(160, 160, 170));
-            DrawTextW(memDC, g_osdTextLine2, -1, &rcText2, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
-            SelectObject(memDC, oldFont);
-            DeleteObject(hFont1);
-            DeleteObject(hFont2);
+            // Subtitle (Model + Status in Cyan)
+            HFONT hFontSub = CreateFontW(
+                -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
+            );
+            SelectObject(memDC, hFontSub);
+            SetTextColor(memDC, RGB(130, 215, 255));
+            RECT rcBot = rcBox;
+            rcBot.top = rcBox.top + 40;
+            DrawTextW(memDC, g_osdTextLine2, -1, &rcBot, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+
+            SelectObject(memDC, oldFont);
+            SelectObject(memDC, oldPen);
+            SelectObject(memDC, oldBr);
             SelectObject(memDC, oldBmp);
             DeleteObject(memBmp);
             DeleteDC(memDC);
+            DeleteObject(hFontBig);
+            DeleteObject(hFontSub);
+            DeleteObject(hBorder);
+            DeleteObject(hBg);
 
             EndPaint(hWnd, &ps);
             return 0;
@@ -656,7 +659,7 @@ static bool PingRapooDevice() {
     ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     BOOL wOk = WriteFile(g_hControlDev, outBuf, 33, &written, &ov);
     if (!wOk && GetLastError() == ERROR_IO_PENDING) {
-        if (WaitForSingleObject(ov.hEvent, 500) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(ov.hEvent, 300) == WAIT_OBJECT_0) {
             GetOverlappedResult(g_hControlDev, &ov, &written, FALSE);
             wOk = (written == 33);
         } else {
@@ -677,23 +680,31 @@ static bool PingRapooDevice() {
     BYTE featBuf[33] = {0};
     featBuf[0] = 0x08;
     BOOL fOk = HidD_GetFeature(g_hFeatureDev, featBuf, 33);
-    if (fOk) {
-        BYTE pollCode = featBuf[0];
-        int hz = 1000;
-        switch (pollCode) {
-            case 0x08: hz = 125; break;
-            case 0x04: hz = 250; break;
-            case 0x02: hz = 500; break;
-            case 0x01: hz = 1000; break;
-            case 0x84: hz = 2000; break;
-            case 0x82: hz = 4000; break;
-            case 0x81: hz = 8000; break;
-        }
-        InterlockedExchange(&g_currentPollingHz, hz);
+
+    // If fOk failed or featBuf[0] != 0x01 (ACK), mouse is offline (turned off or deep sleeping)
+    if (!fOk || featBuf[0] != 0x01) {
+        LeaveCriticalSection(&g_csDevIO);
+        return false;
     }
 
+    // When featBuf[0] == 0x01, mouse is online and awake
+    // The register value is at featBuf[4]
+    BYTE pollCode = featBuf[4];
+    int hz = 1000;
+    switch (pollCode) {
+        case 0x08: hz = 125; break;
+        case 0x04: hz = 250; break;
+        case 0x02: hz = 500; break;
+        case 0x01: hz = 1000; break;
+        case 0x84: hz = 2000; break;
+        case 0x82: hz = 4000; break;
+        case 0x81: hz = 8000; break;
+        default:   hz = 1000; break;
+    }
+    InterlockedExchange(&g_currentPollingHz, hz);
+
     LeaveCriticalSection(&g_csDevIO);
-    return (fOk != FALSE);
+    return true;
 }
 
 static void SetPollingRate(int hz) {
@@ -721,32 +732,6 @@ static void SetPollingRate(int hz) {
     }
 }
 
-static void SetPerformanceMode(int mode) {
-    // Determine target register address based on current polling rate
-    int hz = (int)g_currentPollingHz;
-    BYTE addr = 0xDF; // 1000Hz default
-    switch (hz) {
-        case 125:  addr = 0xDC; break;
-        case 250:  addr = 0xDD; break;
-        case 500:  addr = 0xDE; break;
-        case 1000: addr = 0xDF; break;
-        case 2000: addr = 0xE0; break;
-        case 4000: addr = 0xE1; break;
-        case 8000: addr = 0xE2; break;
-    }
-
-    BYTE code = (BYTE)mode; // 1: Low, 2: HP, 5: OC
-    if (SendRapooCommand(0x08, addr, &code, 1)) {
-        InterlockedExchange(&g_currentPerfMode, mode);
-
-        const WCHAR* pName = (mode == 1) ? L"低功耗续航模式" : ((mode == 5) ? L"狂暴超频模式 (OC)" : L"竞技模式 (标准 HP)");
-        WCHAR l1[64], l2[64];
-        StringCchPrintfW(l1, ARRAYSIZE(l1), L"%s", pName);
-        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  性能模式已切换", g_detectedModel);
-        ShowCustomOsd(l1, l2);
-    }
-}
-
 static void SetSleepTimeout(int minutes) {
     if (minutes < 2) minutes = 2;
     if (minutes > 120) minutes = 120;
@@ -756,20 +741,8 @@ static void SetSleepTimeout(int minutes) {
         InterlockedExchange(&g_currentSleepMin, minutes);
 
         WCHAR l1[64], l2[64];
-        StringCchPrintfW(l1, ARRAYSIZE(l1), L"休眠超时: %d 分钟", minutes);
-        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  省电策略已更新", g_detectedModel);
-        ShowCustomOsd(l1, l2);
-    }
-}
-
-static void SetLinearCorrection(bool enable) {
-    BYTE code = enable ? 0x00 : 0x01; // Bit0: 0 = On, 1 = Off
-    if (SendRapooCommand(0x08, 0xC3, &code, 1)) {
-        g_linearCorrection = enable;
-
-        WCHAR l1[64], l2[64];
-        StringCchPrintfW(l1, ARRAYSIZE(l1), L"直线修正: %s", enable ? L"已开启" : L"已关闭");
-        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  传感器配置已应用", g_detectedModel);
+        StringCchPrintfW(l1, ARRAYSIZE(l1), L"休眠时间: %d 分钟", minutes);
+        StringCchPrintfW(l2, ARRAYSIZE(l2), L"%s  |  设置已生效", g_detectedModel);
         ShowCustomOsd(l1, l2);
     }
 }
@@ -968,6 +941,9 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         CancelIo(hStatus);
                         break;
                     } else if (waitRes == WAIT_TIMEOUT) {
+                        CancelIo(hStatus);
+                        GetOverlappedResult(hStatus, &ov, &bytesRead, FALSE);
+
                         // Heartbeat check: actively query device status
                         bool alive = PingRapooDevice();
                         if (!alive) {
@@ -1088,21 +1064,25 @@ static void ShowContextMenu(HWND hWnd) {
     WCHAR bufHeader[64];
     WCHAR bufBat[64];
     WCHAR bufDpi[64];
+    WCHAR bufPoll[64];
 
     if (g_deviceConnected) {
         StringCchPrintfW(bufHeader, 64, L"%s (已连接)", g_detectedModel);
         StringCchPrintfW(bufBat, 64, L"电池电量: %d%%", g_battery);
         StringCchPrintfW(bufDpi, 64, L"当前 DPI: %d (第 %d 档)", g_dpiX, g_dpiLevel);
+        StringCchPrintfW(bufPoll, 64, L"当前回报率: %d Hz", g_currentPollingHz);
     } else {
         StringCchPrintfW(bufHeader, 64, L"%s (休眠 / 未连接)", g_detectedModel);
         StringCchPrintfW(bufBat, 64, L"电池电量: --");
         StringCchPrintfW(bufDpi, 64, L"当前 DPI: --");
+        StringCchPrintfW(bufPoll, 64, L"当前回报率: --");
     }
 
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_HEADER, bufHeader);
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_BATTERY, bufBat);
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_DPI, bufDpi);
+    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_POLL_INFO, bufPoll);
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     // Submenu 1: Polling Rate
@@ -1116,14 +1096,7 @@ static void ShowContextMenu(HWND hWnd) {
     AppendMenuW(hSubPoll, MF_STRING | (g_currentPollingHz == 8000 ? MF_CHECKED : 0), IDM_POLL_8000, L"8000 Hz (电竞高刷)");
     AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubPoll, L"回报率设置");
 
-    // Submenu 2: Performance Mode
-    HMENU hSubPerf = CreatePopupMenu();
-    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 1 ? MF_CHECKED : 0), IDM_PERF_LOW, L"低功耗模式 (长续航)");
-    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 2 ? MF_CHECKED : 0), IDM_PERF_HP, L"竞技模式 (标准 HP)");
-    AppendMenuW(hSubPerf, MF_STRING | (g_currentPerfMode == 5 ? MF_CHECKED : 0), IDM_PERF_OC, L"狂暴超频模式 (OC)");
-    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubPerf, L"性能模式");
-
-    // Submenu 3: Sleep Timeout
+    // Submenu 2: Sleep Timeout
     HMENU hSubSleep = CreatePopupMenu();
     AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 2 ? MF_CHECKED : 0), IDM_SLEEP_2M, L"2 分钟");
     AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 5 ? MF_CHECKED : 0), IDM_SLEEP_5M, L"5 分钟");
@@ -1131,11 +1104,6 @@ static void ShowContextMenu(HWND hWnd) {
     AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 30 ? MF_CHECKED : 0), IDM_SLEEP_30M, L"30 分钟");
     AppendMenuW(hSubSleep, MF_STRING | (g_currentSleepMin == 60 ? MF_CHECKED : 0), IDM_SLEEP_60M, L"60 分钟");
     AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubSleep, L"休眠时间");
-
-    // Submenu 4: Sensor Assist
-    HMENU hSubSensor = CreatePopupMenu();
-    AppendMenuW(hSubSensor, MF_STRING | (g_linearCorrection ? MF_CHECKED : 0), IDM_LINEAR_CORRECT, L"直线修正 (Angle Snapping)");
-    AppendMenuW(hMenu, MF_POPUP | (g_deviceConnected ? 0 : MF_GRAYED), (UINT_PTR)hSubSensor, L"传感器辅助");
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
@@ -1189,17 +1157,11 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 case IDM_POLL_4000: SetPollingRate(4000); break;
                 case IDM_POLL_8000: SetPollingRate(8000); break;
 
-                case IDM_PERF_LOW:  SetPerformanceMode(1); break;
-                case IDM_PERF_HP:   SetPerformanceMode(2); break;
-                case IDM_PERF_OC:   SetPerformanceMode(5); break;
-
                 case IDM_SLEEP_2M:  SetSleepTimeout(2);  break;
                 case IDM_SLEEP_5M:  SetSleepTimeout(5);  break;
                 case IDM_SLEEP_10M: SetSleepTimeout(10); break;
                 case IDM_SLEEP_30M: SetSleepTimeout(30); break;
                 case IDM_SLEEP_60M: SetSleepTimeout(60); break;
-
-                case IDM_LINEAR_CORRECT: SetLinearCorrection(!g_linearCorrection); break;
 
                 case IDM_EXIT: {
                     DestroyWindow(hWnd);
