@@ -575,8 +575,8 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
             StringCchCopyW(lowerPath, MAX_PATH, pDetail->DevicePath);
             _wcslwr_s(lowerPath, MAX_PATH);
 
-            if (wcsstr(lowerPath, L"vid_24ae") && 
-               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1411") || wcsstr(lowerPath, L"pid_1410")) && 
+            if (wcsstr(lowerPath, L"vid_24ae") &&
+               (wcsstr(lowerPath, L"pid_1460") || wcsstr(lowerPath, L"pid_4660") || wcsstr(lowerPath, L"pid_1417") || wcsstr(lowerPath, L"pid_1411") || wcsstr(lowerPath, L"pid_1410")) &&
                 wcsstr(lowerPath, L"col09")) {
                 StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
                 found = true;
@@ -586,6 +586,8 @@ static bool FindRapooReportPath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7");
                     } else if (wcsstr(lowerPath, L"pid_4660")) {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT7 (有线)");
+                    } else if (wcsstr(lowerPath, L"pid_1417")) {
+                        StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3 MAX");
                     } else if (wcsstr(lowerPath, L"pid_1411")) {
                         StringCchCopyW(outModel, maxModelLen, L"雷柏 VT3S (有线)");
                     } else if (wcsstr(lowerPath, L"pid_1410")) {
