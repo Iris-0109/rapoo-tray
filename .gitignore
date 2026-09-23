@@ -19,6 +19,3 @@ dist/
 # OS temporary files
 Thumbs.db
 Desktop.ini
-
-# Plugins
-plugin/
