@@ -92,26 +92,63 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
             StringCchCopyW(lowerPath, MAX_PATH, pDetail->DevicePath);
             _wcslwr_s(lowerPath, MAX_PATH);
 
-            if (wcsstr(lowerPath, L"vid_24ae") && wcsstr(lowerPath, L"col09")) {
-                StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
-                bool matched = false;
-                for (const auto& dev : SUPPORTED_DEVICES) {
-                    if (wcsstr(lowerPath, dev.pid_sub)) {
-                        if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, dev.model_name);
-                        if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, dev.mode_name);
-                        matched = true;
-                        break;
+            if (wcsstr(lowerPath, L"vid_24ae")) {
+                HANDLE hProbe = CreateFileW(
+                    pDetail->DevicePath,
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+                if (hProbe == INVALID_HANDLE_VALUE) {
+                    hProbe = CreateFileW(
+                        pDetail->DevicePath,
+                        0,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL
+                    );
+                }
+
+                if (hProbe != INVALID_HANDLE_VALUE) {
+                    PHIDP_PREPARSED_DATA pData = NULL;
+                    if (HidD_GetPreparsedData(hProbe, &pData)) {
+                        HIDP_CAPS caps;
+                        if (HidP_GetCaps(pData, &caps) == HIDP_STATUS_SUCCESS) {
+                            if (caps.UsagePage == 0xFF00) {
+                                if (caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09")) || (caps.InputReportByteLength == 19 && caps.Usage != 0x000E)) {
+                                    StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
+                                    bool matched = false;
+                                    for (const auto& dev : SUPPORTED_DEVICES) {
+                                        if (wcsstr(lowerPath, dev.pid_sub)) {
+                                            if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, dev.model_name);
+                                            if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, dev.mode_name);
+                                            matched = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!matched) {
+                                        bool isWired = (wcsstr(lowerPath, L"pid_46") || wcsstr(lowerPath, L"pid_1411"));
+                                        if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"雷柏游戏鼠标 (通用)");
+                                        if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, isWired ? L"USB有线模式" : L"2.4G无线模式");
+                                    }
+                                    found = true;
+                                }
+                            }
+                        }
+                        HidD_FreePreparsedData(pData);
                     }
+                    CloseHandle(hProbe);
                 }
-                if (!matched) {
-                    // 通用设备兜底：根据 PID 特征判断有线还是无线
-                    bool isWired = (wcsstr(lowerPath, L"pid_46") || wcsstr(lowerPath, L"pid_1411"));
-                    if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"雷柏游戏鼠标 (通用)");
-                    if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, isWired ? L"USB有线模式" : L"2.4G无线模式");
+
+                if (found) {
+                    free(pDetail);
+                    break;
                 }
-                found = true;
-                free(pDetail);
-                break;
             }
         }
         free(pDetail);

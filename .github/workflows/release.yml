@@ -41,11 +41,19 @@ jobs:
           g++ -O3 -mwindows -municode -s -static installer.cpp installer.o -lole32 -lshell32 -luser32 -lgdi32 -ladvapi32 -luuid -o ../dist/rapoo-tray-setup.exe
           rm -f installer.o
 
+      - name: Build rapoo-plugin.dll (TrafficMonitor Plugin)
+        shell: msys2 {0}
+        run: |
+          mkdir -p bin
+          cd plugin
+          windres --codepage 65001 -i plugin.rc -o plugin.o -O coff
+          g++ -shared -O3 -mwindows -municode -s -static rapoo_plugin.cpp plugin.o -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -o ../bin/rapoo-plugin.dll
+          rm -f plugin.o
+
       - name: Create GitHub Release & Upload Assets
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           body_path: RELEASE_NOTES.md
           files: |
-            bin/rapoo-tray.exe
-            dist/rapoo-tray-setup.exe
+            bin/rapoo-plugin.dll

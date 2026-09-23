@@ -4,7 +4,7 @@
   <p><b>雷柏VT系列游戏鼠标轻量化托盘程序</b></p>
 
   <p>
-    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.2.0-blue?style=flat-square" alt="Release" /></a>
+    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.2.1-blue?style=flat-square" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows" alt="Platform" />
     <img src="https://img.shields.io/badge/Language-C%2B%2B17%20%2F%20Win32-00599C?style=flat-square&logo=c%2B%2B" alt="Language" />
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
@@ -15,7 +15,7 @@
 
 ## 💡 项目简介
 
-**rapoo-tray** 是面向雷柏（Rapoo）游戏鼠标用户的轻量化辅助工具。基于 C++17 与 Win32 API 编写，不依赖臃肿的第三方库，占用极低。程序常驻于 Windows 任务栏系统托盘，提供电量监测、DPI 显示、回报率调节、休眠配置等常用功能。
+**rapoo-tray** 是面向雷柏（Rapoo）游戏鼠标用户的轻量化辅助工具。基于 C++17 与 Win32 API 编写，不依赖臃肿的第三方库，占用极低。程序支持以任务栏系统托盘独立运行，或作为插件集成至 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor)，提供电量监测、DPI 显示、回报率调节、休眠配置等常用功能。
 
 ---
 
@@ -96,12 +96,30 @@
 
 ---
 
+## 🔌 TrafficMonitor 插件使用指南
+
+本项目提供官方适配的 TrafficMonitor 扩展插件（`rapoo-plugin.dll`），可在系统监控软件 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) 的任务栏窗口与主悬浮窗中显示鼠标状态。
+
+### 显示项目
+- **鼠标电量**（例如：`M: 85%`，充电时显示为 `M: ⚡85%`）
+- **鼠标 DPI**（例如：`DPI: 800`）
+- **悬停信息 (Tooltip)**：鼠标悬停在监控项上可查看型号、连接模式（2.4G/USB）、详细电量与当前档位。
+
+### 安装步骤
+1. 前往 [Releases](https://github.com/Iris-0109/rapoo-tray/releases) 下载 `rapoo-plugin.dll`。
+2. 将 `rapoo-plugin.dll` 放置于 TrafficMonitor 根目录下的 `plugins` 文件夹中。
+3. 重启 TrafficMonitor（或在右键菜单中选择“更多功能” -> “插件管理” -> “重新加载插件”）。
+4. 在“选项” -> “任务栏窗口设置”或“主窗口设置”中，勾选“鼠标电量”和“鼠标DPI”即可。
+
+---
+
 ## 📥 下载与安装
 
 请前往 [GitHub Releases](https://github.com/Iris-0109/rapoo-tray/releases) 下载最新发行版：
 
-- **单文件便携版 (`rapoo-tray.exe`)**：约 370 KB，绿色免安装，解压至任意目录双击即可运行。
+- **单文件便携版 (`rapoo-tray.exe`)**：约 370 KB，绿色免安装独立托盘程序。
 - **一键安装向导 (`rapoo-tray-setup.exe`)**：约 550 KB，自动部署至本地目录，创建快捷方式并支持控制面板卸载。
+- **TrafficMonitor 插件 (`rapoo-plugin.dll`)**：约 28 KB，供 TrafficMonitor 用户按需下载使用。
 
 ---
 
