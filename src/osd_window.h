@@ -12,6 +12,9 @@ void Show(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3 = nullptr);
 // Formatted notification when DPI changes
 void ShowDpiUpdate(int level, int dpix, int dpiy, int battery, int pollingHz, bool isCharging, bool isWired, const WCHAR* modelName);
 
+// Formatted notification when Battery Icon Style changes
+void ShowStyleOsd(int style);
+
 HWND GetWindowHandle();
 
 } // namespace Osd

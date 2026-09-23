@@ -103,7 +103,7 @@ static LRESULT CALLBACK OsdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 hFontSub = CreateFontW(
                     -S(12), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
+                    CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Microsoft YaHei UI"
                 );
                 SelectObject(memDC, hFontSub);
                 SetTextColor(memDC, RGB(120, 210, 255));
@@ -224,7 +224,7 @@ void Show(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3) {
     HFONT hFontSub = CreateFontW(
         -S(12), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI"
+        CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Microsoft YaHei UI"
     );
 
     RECT r1 = {0, 0, 0, 0};
@@ -252,10 +252,10 @@ void Show(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3) {
     DeleteObject(hFontSub);
     ReleaseDC(NULL, screenDC);
 
-    // Add safe horizontal padding (28px each side)
-    int targetW = maxTextW + S(56);
-    targetW = std::max(targetW, S(260));
-    targetW = std::min(targetW, S(460));
+    // Add safe horizontal padding (18px each side)
+    int targetW = maxTextW + S(36);
+    targetW = std::max(targetW, S(210));
+    targetW = std::min(targetW, S(420));
 
     int targetH = hasLine3 ? S(88) : S(66);
 
@@ -276,20 +276,22 @@ void Show(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3) {
 
 void ShowDpiUpdate(int level, int dpix, int dpiy, int battery, int pollingHz, bool isCharging, bool isWired, const WCHAR* modelName) {
     WCHAR l1[64], l2[64], l3[64];
-    StringCchPrintfW(l1, ARRAYSIZE(l1), L"DPI: %d", dpix);
-    StringCchPrintfW(l2, ARRAYSIZE(l2), L"第 %d 档", level);
-
     const WCHAR* mName = (modelName && modelName[0]) ? modelName : L"雷柏游戏鼠标";
+    StringCchPrintfW(l1, ARRAYSIZE(l1), L"%s  DPI %d", mName, dpix);
+    StringCchPrintfW(l2, ARRAYSIZE(l2), L"X 轴: %d    Y 轴: %d", dpix, dpiy);
 
-    if (isCharging) {
-        StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s%s  |  电量 %d%% (充电中 ⚡)  |  %d Hz",
-            mName, isWired ? L" (有线模式)" : L"", battery, pollingHz);
-    } else {
-        StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s%s  |  电量 %d%%  |  %d Hz",
-            mName, isWired ? L" (有线模式)" : L"", battery, pollingHz);
-    }
+    const WCHAR* modeStr = isWired ? L"USB" : L"2.4G";
+    const WCHAR* batIcon = isCharging ? L"⚡" : L"🔋";
+    StringCchPrintfW(l3, ARRAYSIZE(l3), L"%s  |  第 %d 档  |  %s %d%%  |  %d Hz",
+        modeStr, level, batIcon, battery, pollingHz);
 
     Show(l1, l2, l3);
+}
+
+void ShowStyleOsd(int style) {
+    const WCHAR* names[] = { L"样式一：经典电池", L"样式二：状态圆点", L"样式三：大号数字" };
+    int idx = std::clamp(style, 0, 2);
+    Show(L"电池图标样式", names[idx], L"双击托盘图标可循环切换");
 }
 
 } // namespace Osd

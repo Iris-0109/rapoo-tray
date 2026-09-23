@@ -74,10 +74,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
     switch (msg) {
         case WM_APP_TRAYMSG: {
-            if (lParam == WM_RBUTTONUP || lParam == WM_LBUTTONUP) {
-                SetForegroundWindow(hWnd);
-                Tray::ShowMenu(hWnd);
-            } else if (lParam == WM_LBUTTONDBLCLK) {
+            if (lParam == WM_LBUTTONUP) {
                 Device::State st = Device::GetCurrentState();
                 if (st.isConnected) {
                     Osd::ShowDpiUpdate(
@@ -90,7 +87,17 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                         st.isWired,
                         st.modelName
                     );
+                } else {
+                    const WCHAR* mName = st.modelName[0] ? st.modelName : L"雷柏游戏鼠标";
+                    Osd::Show(mName, L"设备休眠 / 未连接", L"请移动鼠标唤醒或插上 USB 线");
                 }
+            } else if (lParam == WM_RBUTTONUP) {
+                SetForegroundWindow(hWnd);
+                Tray::ShowMenu(hWnd);
+            } else if (lParam == WM_LBUTTONDBLCLK) {
+                int s = Tray::CycleBatteryStyle();
+                Osd::ShowStyleOsd(s);
+                RefreshTrayUI(Device::GetCurrentState());
             }
             return 0;
         }
@@ -173,7 +180,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     dbFilter.dbcc_size = sizeof(dbFilter);
     dbFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     HidD_GetHidGuid(&dbFilter.dbcc_classguid);
-    RegisterDeviceNotificationW(g_hMainWnd, &dbFilter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    HDEVNOTIFY hDevNotify = RegisterDeviceNotificationW(g_hMainWnd, &dbFilter, DEVICE_NOTIFY_WINDOW_HANDLE | 0x00000004);
 
     // Register Notify Icon
     g_nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -196,6 +203,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
 
     // Clean exit
+    if (hDevNotify) {
+        UnregisterDeviceNotification(hDevNotify);
+        hDevNotify = NULL;
+    }
     Device::Stop();
     Osd::Cleanup();
 

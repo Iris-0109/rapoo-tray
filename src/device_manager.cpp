@@ -20,6 +20,7 @@ static HANDLE g_hStopEvent = NULL;
 static HANDLE g_hDevChangeEvent = NULL;
 
 static CRITICAL_SECTION g_csDevIO;
+static CRITICAL_SECTION g_csState;
 static HANDLE g_hControlDev = INVALID_HANDLE_VALUE;
 static HANDLE g_hFeatureDev = INVALID_HANDLE_VALUE;
 
@@ -120,6 +121,42 @@ static bool PingDevice(int& outHz) {
     return true;
 }
 
+
+struct RapooModelEntry {
+    const WCHAR* pidKeyword;
+    const WCHAR* modelName;
+};
+
+// 仅收录经由实体硬件测试验证的数据，严禁未经证实的推测
+static const RapooModelEntry VERIFIED_MODELS[] = {
+    // 雷柏 VT7 系列 (实测已验证)
+    { L"1460", L"雷柏 VT7" },
+    { L"4660", L"雷柏 VT7" },
+
+    // 雷柏 VT3S 系列 (实测已验证)
+    { L"1406", L"雷柏 VT3S" },
+    { L"1410", L"雷柏 VT3S" },
+    { L"4606", L"雷柏 VT3S" },
+    { L"1411", L"雷柏 VT3S" },
+
+    // 雷柏 VT3 MAX 系列 (实测已验证 - PR #3 by @sAchNMN)
+    { L"1417", L"雷柏 VT3 MAX" },
+};
+
+static void ResolveRapooModelName(const WCHAR* targetPid, WCHAR* outModel, DWORD maxModelLen) {
+    if (!outModel || maxModelLen == 0) return;
+
+    for (const auto& entry : VERIFIED_MODELS) {
+        if (wcsstr(targetPid, entry.pidKeyword)) {
+            StringCchCopyW(outModel, maxModelLen, entry.modelName);
+            return;
+        }
+    }
+
+    // 通用类兜底：兼容所有雷柏二代 Nordic 架构 (54L15/3950) 未打标机型
+    StringCchCopyW(outModel, maxModelLen, L"雷柏游戏鼠标 (通用)");
+}
+
 static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pathFeature, WCHAR* outModel, DWORD maxModelLen, bool* outIsWired) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
@@ -137,7 +174,9 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
     WCHAR targetPid[32] = {0};
     bool isWired = false;
 
-    // Phase 1A: Look for wired device first (PID 46xx or 1411)
+    // Phase 1: Determine the target device.
+    // First scan: look specifically for wired Rapoo mice (pid_46xx or pid_1411).
+    // If a wired device is found, prioritize it over wireless dongles!
     for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
         DWORD reqSize = 0;
         SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
@@ -167,7 +206,7 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
         free(pDetail);
     }
 
-    // Phase 1B: If no wired device found, look for wireless dongles
+    // Second scan: if no wired device found, look for wireless dongles
     if (targetPid[0] == 0) {
         for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
             DWORD reqSize = 0;
@@ -239,6 +278,17 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
                         NULL
                     );
                 }
+                if (hProbe == INVALID_HANDLE_VALUE) {
+                    hProbe = CreateFileW(
+                        pDetail->DevicePath,
+                        0,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL
+                    );
+                }
 
                 if (hProbe != INVALID_HANDLE_VALUE) {
                     PHIDP_PREPARSED_DATA pData = NULL;
@@ -246,13 +296,13 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
                         HIDP_CAPS caps;
                         if (HidP_GetCaps(pData, &caps) == HIDP_STATUS_SUCCESS) {
                             if (caps.UsagePage == 0xFF00) {
-                                if ((caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09"))) && caps.InputReportByteLength >= 19) {
+                                if (caps.Usage == 0x000E || caps.OutputReportByteLength == 33) {
+                                    StringCchCopyW(pathControl, MAX_PATH, pDetail->DevicePath);
+                                } else if (caps.Usage == 0x000F || (caps.FeatureReportByteLength == 33 && caps.Usage != 0x0010)) {
+                                    StringCchCopyW(pathFeature, MAX_PATH, pDetail->DevicePath);
+                                } else if (caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09")) || (caps.InputReportByteLength == 19 && caps.Usage != 0x000E)) {
                                     StringCchCopyW(pathStatus, MAX_PATH, pDetail->DevicePath);
                                     foundStatus = true;
-                                } else if (caps.Usage == 0x000E || caps.OutputReportByteLength == 33) {
-                                    StringCchCopyW(pathControl, MAX_PATH, pDetail->DevicePath);
-                                } else if (caps.Usage == 0x000F || caps.FeatureReportByteLength == 33) {
-                                    StringCchCopyW(pathFeature, MAX_PATH, pDetail->DevicePath);
                                 }
                             }
                         }
@@ -268,16 +318,7 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
 
     if (foundStatus) {
         if (outModel && maxModelLen > 0) {
-            if (wcsstr(targetPid, L"1460") || wcsstr(targetPid, L"4660")) {
-                StringCchCopyW(outModel, maxModelLen, isWired ? L"雷柏 VT7 (有线模式)" : L"雷柏 VT7");
-            } else if (wcsstr(targetPid, L"1406") || wcsstr(targetPid, L"1410") || wcsstr(targetPid, L"4606") || wcsstr(targetPid, L"1411")) {
-                StringCchCopyW(outModel, maxModelLen, isWired ? L"雷柏 VT3S (有线模式)" : L"雷柏 VT3S");
-            } else if (wcsstr(targetPid, L"1412") || wcsstr(targetPid, L"1413") || wcsstr(targetPid, L"1440") ||
-                       wcsstr(targetPid, L"4612") || wcsstr(targetPid, L"4613") || wcsstr(targetPid, L"4640")) {
-                StringCchCopyW(outModel, maxModelLen, isWired ? L"雷柏 VT9 系列 (有线模式)" : L"雷柏 VT9 系列");
-            } else {
-                StringCchCopyW(outModel, maxModelLen, isWired ? L"雷柏游戏鼠标 (有线模式)" : L"雷柏无线鼠标");
-            }
+            ResolveRapooModelName(targetPid, outModel, maxModelLen);
         }
         if (outIsWired) {
             *outIsWired = isWired;
@@ -295,16 +336,20 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
     bool isWired = false;
 
     // Load user's saved sleep timeout from registry (default 10 min)
+    EnterCriticalSection(&g_csState);
     g_currentState.sleepMinutes = (int)LoadRegistryDword(L"SleepTimeout", 10);
     g_currentState.sleepMinutes = Rapoo::ClampSleepMinutes(g_currentState.sleepMinutes);
+    LeaveCriticalSection(&g_csState);
 
     while (WaitForSingleObject(g_hStopEvent, 200) == WAIT_TIMEOUT) {
         if (!FindRapooEndpoints(pathStatus, pathControl, pathFeature, modelBuf, 64, &isWired)) {
-            if (g_currentState.isConnected) {
-                g_currentState.isConnected = false;
-                g_currentState.isCharging = false;
-                if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED | CHANGE_BATTERY);
-            }
+            EnterCriticalSection(&g_csState);
+            bool wasConn = g_currentState.isConnected;
+            g_currentState.isConnected = false;
+            g_currentState.isCharging = false;
+            State copySt = g_currentState;
+            LeaveCriticalSection(&g_csState);
+            if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
             Sleep(1000);
             continue;
         }
@@ -320,11 +365,13 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         );
 
         if (hStatus == INVALID_HANDLE_VALUE) {
-            if (g_currentState.isConnected) {
-                g_currentState.isConnected = false;
-                g_currentState.isCharging = false;
-                if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED | CHANGE_BATTERY);
-            }
+            EnterCriticalSection(&g_csState);
+            bool wasConn = g_currentState.isConnected;
+            g_currentState.isConnected = false;
+            g_currentState.isCharging = false;
+            State copySt = g_currentState;
+            LeaveCriticalSection(&g_csState);
+            if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
             Sleep(1000);
             continue;
         }
@@ -340,6 +387,17 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 FILE_FLAG_OVERLAPPED,
                 NULL
             );
+            if (g_hControlDev == INVALID_HANDLE_VALUE) {
+                g_hControlDev = CreateFileW(
+                    pathControl,
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED,
+                    NULL
+                );
+            }
         }
         if (pathFeature[0]) {
             g_hFeatureDev = CreateFileW(
@@ -351,13 +409,41 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 FILE_ATTRIBUTE_NORMAL,
                 NULL
             );
+            if (g_hFeatureDev == INVALID_HANDLE_VALUE) {
+                g_hFeatureDev = CreateFileW(
+                    pathFeature,
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+            }
+            if (g_hFeatureDev == INVALID_HANDLE_VALUE) {
+                g_hFeatureDev = CreateFileW(
+                    pathFeature,
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+            }
         }
         LeaveCriticalSection(&g_csDevIO);
 
+        EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
         g_currentState.isWired = isWired;
         g_currentState.isConnected = true;
-        if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED);
+        if (isWired) {
+            g_currentState.isCharging = true;
+        }
+        State connSt = g_currentState;
+        LeaveCriticalSection(&g_csState);
+        if (g_callback) g_callback(connSt, CHANGE_CONNECTED);
 
         // ClickSync A5 A3 unlock handshake
         if (g_hControlDev != INVALID_HANDLE_VALUE) {
@@ -374,12 +460,19 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         // Query current hardware polling rate
         int curHz = 1000;
         if (PingDevice(curHz)) {
+            EnterCriticalSection(&g_csState);
             g_currentState.pollingHz = curHz;
-            if (g_callback) g_callback(g_currentState, CHANGE_POLLING);
+            State pollSt = g_currentState;
+            LeaveCriticalSection(&g_csState);
+            if (g_callback) g_callback(pollSt, CHANGE_POLLING);
         }
 
         // Push saved sleep timeout to device hardware
-        BYTE sleepCode = (BYTE)g_currentState.sleepMinutes;
+        int curSleepMin = 10;
+        EnterCriticalSection(&g_csState);
+        curSleepMin = g_currentState.sleepMinutes;
+        LeaveCriticalSection(&g_csState);
+        BYTE sleepCode = (BYTE)curSleepMin;
         SendRawCommand(Rapoo::BANK_SYSTEM, Rapoo::ADDR_SLEEP_TIMEOUT, &sleepCode, 1);
 
         HANDLE hReadEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -396,19 +489,19 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 DWORD err = GetLastError();
                 if (err == ERROR_IO_PENDING) {
                     HANDLE waitHandles[3] = { g_hStopEvent, hReadEvent, g_hDevChangeEvent };
-                    // 3500ms timeout for heartbeat
-                    DWORD waitRes = WaitForMultipleObjects(3, waitHandles, FALSE, 3500);
+                    DWORD waitMs = 3000;
+                    DWORD waitRes = WaitForMultipleObjects(3, waitHandles, FALSE, waitMs);
 
                     if (waitRes == WAIT_OBJECT_0) {
                         CancelIo(hStatus);
                         break;
                     } else if (waitRes == WAIT_OBJECT_0 + 2) {
                         // PnP Debounce: Windows composite device sends multiple arrival messages.
-                        // Drain any consecutive events within 400ms before handling reconnect.
-                        Sleep(400);
+                        // Drain any consecutive events within 300ms before handling reconnect.
+                        Sleep(300);
                         while (WaitForSingleObject(g_hDevChangeEvent, 0) == WAIT_OBJECT_0) {
                             ResetEvent(g_hDevChangeEvent);
-                            Sleep(100);
+                            Sleep(50);
                         }
                         CancelIo(hStatus);
                         break;
@@ -416,23 +509,24 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         CancelIo(hStatus);
                         GetOverlappedResult(hStatus, &ov, &bytesRead, FALSE);
 
-                        // PROBLEM 1 FIX:
-                        // In wired mode, the mouse is directly on the USB bus.
-                        // Stationary mouse does NOT mean offline. Do NOT ping or disconnect in wired mode!
-                        if (!g_currentState.isWired) {
+                        if (!isWired) {
                             int hz = 0;
                             bool alive = PingDevice(hz);
                             if (!alive) {
-                                if (g_currentState.isConnected) {
-                                    g_currentState.isConnected = false;
-                                    g_currentState.isCharging = false;
-                                    if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED | CHANGE_BATTERY);
-                                }
+                                EnterCriticalSection(&g_csState);
+                                bool wasConn = g_currentState.isConnected;
+                                g_currentState.isConnected = false;
+                                g_currentState.isCharging = false;
+                                State copySt = g_currentState;
+                                LeaveCriticalSection(&g_csState);
+                                if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
                             } else {
-                                if (!g_currentState.isConnected) {
-                                    g_currentState.isConnected = true;
-                                    if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED);
-                                }
+                                EnterCriticalSection(&g_csState);
+                                bool wasConn = g_currentState.isConnected;
+                                g_currentState.isConnected = true;
+                                State copySt = g_currentState;
+                                LeaveCriticalSection(&g_csState);
+                                if (!wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED);
                             }
                         }
                         continue;
@@ -452,8 +546,14 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             // Parse status broadcast using ClickSync standard parser
             Rapoo::DeviceStatus devStatus;
             if (Rapoo::ParseStatusReport(buf, bytesRead, devStatus, g_cachedBattery)) {
-                DWORD mask = 0;
+                if (isWired) {
+                    devStatus.isCharging = true;
+                }
 
+                DWORD mask = 0;
+                State copySt;
+
+                EnterCriticalSection(&g_csState);
                 if (!g_currentState.isConnected) {
                     g_currentState.isConnected = true;
                     mask |= CHANGE_CONNECTED;
@@ -472,16 +572,22 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     g_cachedBattery = devStatus.battery;
                     mask |= CHANGE_BATTERY;
                 }
+                copySt = g_currentState;
+                LeaveCriticalSection(&g_csState);
 
                 if (mask != 0 && g_callback) {
-                    g_callback(g_currentState, mask);
+                    g_callback(copySt, mask);
                 }
             }
         }
 
+        EnterCriticalSection(&g_csState);
+        bool wasConn = g_currentState.isConnected;
         g_currentState.isConnected = false;
         g_currentState.isCharging = false;
-        if (g_callback) g_callback(g_currentState, CHANGE_CONNECTED | CHANGE_BATTERY);
+        State copySt = g_currentState;
+        LeaveCriticalSection(&g_csState);
+        if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
 
         CloseHandle(hReadEvent);
         CloseHandle(hStatus);
@@ -508,6 +614,7 @@ bool Start(HWND hNotifyWnd, StateCallback callback) {
     g_callback = callback;
 
     InitializeCriticalSection(&g_csDevIO);
+    InitializeCriticalSection(&g_csState);
     g_hStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     g_hDevChangeEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
 
@@ -531,6 +638,7 @@ void Stop() {
         g_hDevChangeEvent = NULL;
     }
     DeleteCriticalSection(&g_csDevIO);
+    DeleteCriticalSection(&g_csState);
 }
 
 void NotifyDeviceChange() {
@@ -542,8 +650,11 @@ void NotifyDeviceChange() {
 bool SetPollingRate(int hz) {
     BYTE code = Rapoo::PollingHzToCode(hz);
     if (SendRawCommand(Rapoo::BANK_SYSTEM, Rapoo::ADDR_POLLING_HZ, &code, 1)) {
+        EnterCriticalSection(&g_csState);
         g_currentState.pollingHz = hz;
-        if (g_callback) g_callback(g_currentState, CHANGE_POLLING);
+        State copySt = g_currentState;
+        LeaveCriticalSection(&g_csState);
+        if (g_callback) g_callback(copySt, CHANGE_POLLING);
         return true;
     }
     return false;
@@ -553,16 +664,36 @@ bool SetSleepTimeout(int minutes) {
     minutes = Rapoo::ClampSleepMinutes(minutes);
     BYTE code = (BYTE)minutes;
     if (SendRawCommand(Rapoo::BANK_SYSTEM, Rapoo::ADDR_SLEEP_TIMEOUT, &code, 1)) {
+        EnterCriticalSection(&g_csState);
         g_currentState.sleepMinutes = minutes;
+        State copySt = g_currentState;
+        LeaveCriticalSection(&g_csState);
         SaveRegistryDword(L"SleepTimeout", (DWORD)minutes);
-        if (g_callback) g_callback(g_currentState, CHANGE_SLEEP);
+        if (g_callback) g_callback(copySt, CHANGE_SLEEP);
+        return true;
+    }
+    return false;
+}
+
+bool RefreshPollingRate() {
+    int curHz = 1000;
+    if (PingDevice(curHz)) {
+        EnterCriticalSection(&g_csState);
+        bool changed = (g_currentState.pollingHz != curHz);
+        if (changed) g_currentState.pollingHz = curHz;
+        State copySt = g_currentState;
+        LeaveCriticalSection(&g_csState);
+        if (changed && g_callback) g_callback(copySt, CHANGE_POLLING);
         return true;
     }
     return false;
 }
 
 State GetCurrentState() {
-    return g_currentState;
+    EnterCriticalSection(&g_csState);
+    State st = g_currentState;
+    LeaveCriticalSection(&g_csState);
+    return st;
 }
 
 } // namespace Device
