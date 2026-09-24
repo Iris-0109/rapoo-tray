@@ -438,11 +438,11 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
 
         EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
-        g_currentState.isWired = isWired;
+        // Connection mode comes from the status packet device marker
+        // (0x10 wired / 0x20 dongle); PID-based guess is unreliable for
+        // devices whose dongle and wired share the same PID (e.g. VT3s).
+        g_currentState.isWired = false;
         g_currentState.isConnected = true;
-        if (isWired) {
-            g_currentState.isCharging = true;
-        }
         State connSt = g_currentState;
         LeaveCriticalSection(&g_csState);
         if (g_callback) g_callback(connSt, CHANGE_CONNECTED);
@@ -511,7 +511,14 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         CancelIo(hStatus);
                         GetOverlappedResult(hStatus, &ov, &bytesRead, FALSE);
 
-                        if (!isWired) {
+                        // Dongle mode only: probe the mouse with a ping to
+                        // distinguish sleep vs disconnected (wired reports
+                        // packets directly, no ping needed).
+                        bool wiredNow;
+                        EnterCriticalSection(&g_csState);
+                        wiredNow = g_currentState.isWired;
+                        LeaveCriticalSection(&g_csState);
+                        if (!wiredNow) {
                             int hz = 0;
                             bool alive = PingDevice(hz);
                             if (!alive) {
@@ -557,6 +564,12 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 EnterCriticalSection(&g_csState);
                 if (!g_currentState.isConnected) {
                     g_currentState.isConnected = true;
+                    mask |= CHANGE_CONNECTED;
+                }
+
+                // Real connection mode from the packet device marker
+                if (devStatus.isWired != g_currentState.isWired) {
+                    g_currentState.isWired = devStatus.isWired;
                     mask |= CHANGE_CONNECTED;
                 }
 

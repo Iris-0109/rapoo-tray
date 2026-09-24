@@ -30,6 +30,7 @@ struct DeviceStatus {
     int dpiY = 800;
     int battery = 100;
     bool isCharging = false;
+    bool isWired = false; // device marker 0x10=wired, 0x20=2.4G dongle
 };
 
 // Packet Builders
