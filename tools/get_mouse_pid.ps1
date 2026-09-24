@@ -1,4 +1,4 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "       雷柏鼠标型号 / 硬件 PID 快速提取工具" -ForegroundColor Cyan
@@ -13,7 +13,10 @@ $knownModels = @{
     "1410" = "雷柏 VT3S 系列 (2.4G 无线)"
     "4606" = "雷柏 VT3S 系列 (USB 有线)"
     "1411" = "雷柏 VT3S 系列 (USB 有线)"
+    "1412" = "雷柏 VT3 系列 (2.4G 无线)"
+    "4612" = "雷柏 VT3 系列 (USB 有线)"
     "1417" = "雷柏 VT3 MAX 系列 (2.4G 无线)"
+    "4617" = "雷柏 VT3 MAX 系列 (USB 有线)"
 }
 
 try {

@@ -44,6 +44,10 @@ static const RapooDeviceDef SUPPORTED_DEVICES[] = {
     { L"pid_1410", L"雷柏 VT3S", L"2.4G无线模式" },
     { L"pid_1411", L"雷柏 VT3S", L"USB有线模式" },
 
+    // 雷柏 VT3 系列 (实测已验证)
+    { L"pid_1412", L"雷柏 VT3", L"2.4G无线模式" },
+    { L"pid_4612", L"雷柏 VT3", L"USB有线模式" },
+
     // 雷柏 VT3 MAX 系列 (实测已验证)
     { L"pid_1417", L"雷柏 VT3 MAX", L"2.4G无线模式" },
     { L"pid_4617", L"雷柏 VT3 MAX", L"USB有线模式" },
@@ -499,7 +503,7 @@ public:
         case TMI_DESCRIPTION: return L"在任务栏与悬浮窗实时显示雷柏鼠标电量与DPI";
         case TMI_AUTHOR:      return L"Iris";
         case TMI_COPYRIGHT:   return L"Copyright (C) 2026 Iris";
-        case TMI_VERSION:     return L"1.3.0";
+        case TMI_VERSION:     return L"1.3.1";
         case TMI_URL:         return L"https://github.com/Iris-0109/rapoo-tray";
         default:              return L"";
         }
