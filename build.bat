@@ -21,13 +21,28 @@ where cl >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [Toolchain] Using MSVC CL ...
     rc /c 65001 /fo bin\app.res res\app.rc
-    cl /nologo /O2 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN src\main.cpp src\rapoo_protocol.cpp src\device_manager.cpp src\osd_window.cpp src\tray_menu.cpp src\alert_window.cpp bin\app.res /Fe:bin\rapoo-tray.exe /link /SUBSYSTEM:WINDOWS setupapi.lib hid.lib user32.lib gdi32.lib shell32.lib advapi32.lib uxtheme.lib dwmapi.lib
+    cl /nologo /O2 /MT /utf-8 /std:c++17 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX src\main.cpp src\rapoo_protocol.cpp src\device_manager.cpp src\osd_window.cpp src\tray_menu.cpp src\alert_window.cpp bin\app.res /Fe:bin\rapoo-tray.exe /link /SUBSYSTEM:WINDOWS setupapi.lib hid.lib user32.lib gdi32.lib shell32.lib advapi32.lib uxtheme.lib dwmapi.lib
     if exist bin\app.res del bin\app.res
     if exist *.obj del *.obj
     goto done
 )
 
-echo [ERROR] Neither g++ nor cl.exe was found in PATH.
+where clang++ >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    set "CLANGXX=clang++"
+)
+if not defined CLANGXX if exist "%ProgramFiles%\LLVM\bin\clang++.exe" (
+    set "CLANGXX=%ProgramFiles%\LLVM\bin\clang++.exe"
+)
+if defined CLANGXX if exist "%ProgramFiles%\LLVM\bin\llvm-rc.exe" (
+    echo [Toolchain] Using LLVM Clang++ ...
+    "%ProgramFiles%\LLVM\bin\llvm-rc.exe" /fo bin\app.res res\app.rc
+    "%CLANGXX%" -O3 src\main.cpp src\rapoo_protocol.cpp src\device_manager.cpp src\osd_window.cpp src\tray_menu.cpp src\alert_window.cpp bin\app.res -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -luxtheme -Xlinker /SUBSYSTEM:WINDOWS -o bin\rapoo-tray.exe
+    if exist bin\app.res del bin\app.res
+    goto done
+)
+
+echo [ERROR] Neither g++, cl.exe, nor clang++ was found.
 exit /b 1
 
 :done

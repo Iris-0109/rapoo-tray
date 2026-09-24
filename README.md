@@ -4,7 +4,7 @@
   <p><b>雷柏VT系列游戏鼠标轻量化托盘程序</b></p>
 
   <p>
-    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.2.3-blue?style=flat-square" alt="Release" /></a>
+    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.3.0-blue?style=flat-square" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows" alt="Platform" />
     <img src="https://img.shields.io/badge/Language-C%2B%2B17%20%2F%20Win32-00599C?style=flat-square&logo=c%2B%2B" alt="Language" />
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
@@ -19,7 +19,19 @@
 
 ---
 
-## 🚀 v1.2.0 核心更新
+## 🚀 v1.3.0 核心更新
+
+- **全新低电量预警浮窗系统**：
+  - **分级告警**：$\le 20\%$ 弹出电量不足卡片，$\le 10\%$ 弹出严重低电量警告，避免游戏/办公中断。
+  - **任务栏动态贴合**：通过 Shell API 动态识别任意任务栏高度、停靠边缘与多显示器位置，贴合任务栏边缘呈现。
+  - **DWM 硬件级圆角与原生着色**：采用 Windows 11 `DWMWCP_ROUND` 亚像素平滑圆角与 `DWMWA_BORDER_COLOR` 原生边框，彻底杜绝毛边、锯齿与闪烁。
+  - **智能免打扰**：全屏免夺焦点（`WS_EX_NOACTIVATE`），接入充电器自动静默关闭卡片。
+- **托盘电池图标重构**：
+  - **样式一（经典电池胶囊）**：饱满外框与呼吸内边距，充电居中纯白闪电符号。
+  - **样式二（360° 环形电量进度）**：加粗 3px 弧线仪表盘风格，圆角胶囊收口。
+  - **样式三（大号数字 + 底部比例微横轨）**：高对比度纯数字搭配底部 2px 细微进度条。
+- **稳定性与架构解耦**：
+  - 窗口生命周期与 HID 协议线程严格解耦，主 GUI 线程托管消息泵，消除所有潜在无响应与白屏问题。
 
 - **硬件兼容体系重构**：建立雷柏二代 Nordic 架构通用兼容机制，未打标机型自动归入通用模式，全功能 100% 完整支持；新增雷柏 VT3 MAX 型号识别。
 - **托盘电池个性化**：新增 3 种展示风格：
@@ -38,7 +50,7 @@
 
 | 任务栏托盘图标 (双击循环切换 3 种样式) | OSD 屏幕自适应悬浮窗 (支持 X/Y 轴独立显示) |
 | :---: | :---: |
-| <img src="docs/screenshots/battery_style_1.png" height="42" alt="配置一：经典电池" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_2.png" height="42" alt="配置二：状态大圆点" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_3.png" height="42" alt="配置三：大号数字" /><br><sub>配置一：经典电池 &nbsp;·&nbsp; 配置二：状态圆点 &nbsp;·&nbsp; 配置三：大号数字（样式设计借鉴自 [logi-tray](https://github.com/dts-dan/logi-tray) 作者）</sub> | <img src="docs/screenshots/osd.png" width="300" alt="OSD 屏幕自适应悬浮窗" /> |
+| <img src="docs/screenshots/battery_style_1.png" height="42" alt="配置一：经典电池" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_2.png" height="42" alt="配置二：状态大圆点" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_3.png" height="42" alt="配置三：大号数字" /><br><sub>配置一：经典电池 &nbsp;·&nbsp; 配置二：状态圆点 &nbsp;·&nbsp; 配置三：大号数字</sub> | <img src="docs/screenshots/osd.png" width="300" alt="OSD 屏幕自适应悬浮窗" /> |
 
 | 原生 Fluent 亚克力右键控制面板 | 2~120 分钟连续平滑休眠滑动条 |
 | :---: | :---: |
@@ -80,7 +92,9 @@
 | **雷柏 VT7 系列** | USB 有线直连 | `0x24AE` | `0x4660` | ✅ 开发者实测支持 |
 | **雷柏 VT3S 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1406` / `0x1410` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
 | **雷柏 VT3S 系列** | USB 有线直连 | `0x24AE` | `0x4606` / `0x1411` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
-| **雷柏 VT3 MAX 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1417` | ✅ 社区实测支持（由社区用户 [@sAchNMN](https://github.com/sAchNMN) 提供） | 
+| **雷柏 VT3 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1412` | ✅ 原 rapoo-tray 实测支持 |
+| **雷柏 VT3 系列** | USB 有线直连 | `0x24AE` | `0x4612` | ✅ 原 rapoo-tray 实测支持 |
+| **雷柏 VT3 MAX 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1417` | ✅ 社区实测支持（由社区用户 [@sAchNMN](https://github.com/sAchNMN) 提供） |
 | **雷柏二代游戏鼠标 (未打标机型)** | 2.4G / USB 有线 | `0x24AE` | 通用自动匹配 | 🔑 待验证 |
 
 ### 💡 通用兼容机制与型号提报指南
@@ -169,7 +183,6 @@ build_installer.bat
 - **[@Nuitfanee](https://github.com/Nuitfanee)** ([ClickSync](https://github.com/Nuitfanee/ClickSync))：提供了雷柏双向控制协议逆向与寄存器地址映射的关键技术启发。
 - **[@hsb689](https://github.com/hsb689)**：提供了雷柏 VT3S 系列硬件 PID 数据。
 - **[@sAchNMN](https://github.com/sAchNMN)**：提供了雷柏 VT3 MAX 系列硬件 PID 数据。
-- **[@dts-dan](https://github.com/dts-dan)** ([logi-tray](https://github.com/dts-dan/logi-tray))：提供了托盘电池多态个性化图标样式的设计灵感与创意启发。
 
 
 ---

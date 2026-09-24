@@ -54,7 +54,7 @@ DWORD BuildReadCommand(BYTE bank, BYTE addr, BYTE readLen, BYTE* outBuf, DWORD b
 
 bool ParseStatusReport(const BYTE* buf, DWORD bytesRead, DeviceStatus& outStatus, int cachedBattery) {
     if (!buf || bytesRead < 9) return false;
-    if (buf[0] != REPORT_ID_STATUS || buf[1] != 0x20) return false;
+    if (buf[0] != REPORT_ID_STATUS) return false;
 
     outStatus.dpiLevel = (int)buf[2] + 1;
     outStatus.dpiX = (int)buf[3] | ((int)buf[4] << 8);

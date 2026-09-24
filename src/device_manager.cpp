@@ -139,6 +139,10 @@ static const RapooModelEntry VERIFIED_MODELS[] = {
     { L"4606", L"雷柏 VT3S" },
     { L"1411", L"雷柏 VT3S" },
 
+    // 雷柏 VT3 系列 (来自原 rapoo-tray 实现)
+    { L"1412", L"雷柏 VT3" },
+    { L"4612", L"雷柏 VT3" },
+
     // 雷柏 VT3 MAX 系列 (实测已验证 - PR #3 by @sAchNMN)
     { L"1417", L"雷柏 VT3 MAX" },
 };
@@ -301,8 +305,11 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
                                 } else if (caps.Usage == 0x000F || (caps.FeatureReportByteLength == 33 && caps.Usage != 0x0010)) {
                                     StringCchCopyW(pathFeature, MAX_PATH, pDetail->DevicePath);
                                 } else if (caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09")) || (caps.InputReportByteLength == 19 && caps.Usage != 0x000E)) {
-                                    StringCchCopyW(pathStatus, MAX_PATH, pDetail->DevicePath);
-                                    foundStatus = true;
+                                    bool isPreferredStatus = wcsstr(lowerPath, L"col09") != nullptr;
+                                    if (!foundStatus || isPreferredStatus) {
+                                        StringCchCopyW(pathStatus, MAX_PATH, pDetail->DevicePath);
+                                        foundStatus = true;
+                                    }
                                 }
                             }
                         }
@@ -484,7 +491,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
 
         while (WaitForSingleObject(g_hStopEvent, 0) == WAIT_TIMEOUT) {
             ResetEvent(hReadEvent);
-            BOOL ok = ReadFile(hStatus, buf, 19, &bytesRead, &ov);
+            BOOL ok = ReadFile(hStatus, buf, sizeof(buf), &bytesRead, &ov);
             if (!ok) {
                 DWORD err = GetLastError();
                 if (err == ERROR_IO_PENDING) {
