@@ -54,7 +54,9 @@ DWORD BuildReadCommand(BYTE bank, BYTE addr, BYTE readLen, BYTE* outBuf, DWORD b
 
 bool ParseStatusReport(const BYTE* buf, DWORD bytesRead, DeviceStatus& outStatus, int cachedBattery) {
     if (!buf || bytesRead < 9) return false;
-    if (buf[0] != REPORT_ID_STATUS || buf[1] != 0x20) return false;
+    if (buf[0] != REPORT_ID_STATUS) return false;
+    // Device marker: 0x20 (dongle/VT7-class), 0x10 (VT3s wired)
+    if (buf[1] != 0x20 && buf[1] != 0x10) return false;
 
     outStatus.dpiLevel = (int)buf[2] + 1;
     outStatus.dpiX = (int)buf[3] | ((int)buf[4] << 8);

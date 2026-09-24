@@ -1,5 +1,7 @@
 #include "device_manager.h"
+extern "C" {
 #include <hidsdi.h>
+}
 #include <setupapi.h>
 #include <strsafe.h>
 #include <algorithm>
@@ -546,9 +548,8 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             // Parse status broadcast using ClickSync standard parser
             Rapoo::DeviceStatus devStatus;
             if (Rapoo::ParseStatusReport(buf, bytesRead, devStatus, g_cachedBattery)) {
-                if (isWired) {
-                    devStatus.isCharging = true;
-                }
+                // NOTE: wired USB direct connect does NOT imply charging.
+                // Trust the protocol-level charging flag for all modes.
 
                 DWORD mask = 0;
                 State copySt;
