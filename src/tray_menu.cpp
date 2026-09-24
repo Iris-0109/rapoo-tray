@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <strsafe.h>
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 
@@ -1136,168 +1137,166 @@ HICON CreateBatteryIcon(int battery, bool isCharging, bool isConnected, int size
         }
     };
 
+    auto DrawBolt = [&](int sx, int sy, uint32_t col) {
+        static const char* pattern[7] = {
+            "..#",
+            ".##",
+            "###",
+            ".#.",
+            "##.",
+            "#..",
+            "..."
+        };
+        for (int r = 0; r < 7; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                if (pattern[r][c] == '#') {
+                    for (int dy = 0; dy < SS; ++dy) {
+                        for (int dx = 0; dx < SS; ++dx) {
+                            HiPixel(sx + c * SS + dx, sy + r * SS + dy, col);
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    auto L2S = [&](float v) {
+        return (int)(v * (float)(size * SS) / 16.0f + 0.5f);
+    };
+
     int style = GetBatteryStyle();
 
-    // Style 0: 经典电池图标 (左右拉长横向电池 + 极耳 + 三色变色)
+    // Style 0: 经典纯净电池胶囊 (复刻 logi-tray，1.5px 饱满外框 + 呼吸内边距，充电时居中纯白闪电)
     if (style == 0) {
-        uint32_t c_frame = isDark ? 0xFFFFFFFF : 0xFF1E1E1E;
+        int bx0 = 0;
+        int by0 = L2S(2.5f);
+        int bw  = L2S(13.5f);
+        int bh  = L2S(11.0f);
+        int bx1 = bx0 + bw;
+        int by1 = by0 + bh;
+        int brad = L2S(2.5f);
+
+        uint32_t c_shell = isDark ? 0xFFFFFFFF : 0xFF334155;
         uint32_t c_fill = isCharging ? 0xFF22C55E : ((battery <= 30) ? 0xFFEF4444 : 0xFF3B82F6);
-        uint32_t c_digit = 0xFF000000;
 
-        // Horizontally elongated: enlarged battery icon and digits (做大两号)
-        int tip_w = (size < 20) ? 1 : 2;
-        int tip_h = (size < 20) ? 6 : (size * 4 / 10);
-        int tip_y = (size - tip_h) / 2;
+        // 1. 电池外壳
+        FillRoundRect(bx0, by0, bx1, by1, c_shell, brad);
 
-        int pad_y = (size < 20) ? 1 : ((size <= 24) ? 2 : (size * 10 / 100));
+        // 2. 右侧正极端子
+        int cx0 = L2S(13.8f);
+        int cy0 = L2S(5.2f);
+        int cx1 = std::min(W - 1, cx0 + L2S(1.8f));
+        int cy1 = cy0 + L2S(5.6f);
+        FillRoundRect(cx0, cy0, cx1, cy1, c_shell, L2S(1.0f));
 
-        int body_x0 = 0;
-        int body_x1 = (size - 1 - tip_w) * SS + (SS - 1);
-        int body_y0 = pad_y * SS;
-        int body_y1 = (size - 1 - pad_y) * SS + (SS - 1);
+        // 3. 掏空电池内部，形成 1.5px 饱满外框
+        int stroke_t = (int)(1.5f * SS + 0.5f);
+        int cav_x0 = bx0 + stroke_t;
+        int cav_y0 = by0 + stroke_t;
+        int cav_x1 = bx1 - stroke_t;
+        int cav_y1 = by1 - stroke_t;
+        FillRoundRect(cav_x0, cav_y0, cav_x1, cav_y1, 0, 0);
 
-        int frame_t = 1 * SS; // 1.0 screen pixel border
-        int radius  = (size < 20) ? (SS + SS / 2) : (2 * SS);
-
-        FillRoundRect(body_x0, body_y0, body_x1, body_y1, c_frame, radius);
-
-        if (isConnected) {
-            FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
-                          body_x1 - frame_t, body_y1 - frame_t, c_fill, (radius > frame_t ? radius - frame_t : 0));
-        } else {
-            uint32_t c_dim = isDark ? 0x30606060 : 0x30B0B0B0;
-            FillRoundRect(body_x0 + frame_t, body_y0 + frame_t,
-                          body_x1 - frame_t, body_y1 - frame_t, c_dim, (radius > frame_t ? radius - frame_t : 0));
-        }
-
-        int tip_x0 = (size - tip_w) * SS;
-        int tip_x1 = size * SS - 1;
-        int tip_y0 = tip_y * SS;
-        int tip_y1 = (tip_y + tip_h) * SS - 1;
-        FillRoundRect(tip_x0, tip_y0, tip_x1, tip_y1, c_frame, SS / 2);
-
-        int in_x0 = body_x0 + frame_t;
-        int in_x1 = body_x1 - frame_t;
-        int in_y0 = body_y0 + frame_t;
+        // 4. 内部电量填充（周围留出 0.75px 呼吸内边距，胶囊感更饱满敦实）
+        int pad = (int)(0.75f * SS + 0.5f);
+        int in_x0 = cav_x0 + pad;
+        int in_y0 = cav_y0 + pad;
+        int in_x1 = cav_x1 - pad;
+        int in_y1 = cav_y1 - pad;
         int in_w  = in_x1 - in_x0 + 1;
-        int in_h  = (body_y1 - frame_t) - in_y0 + 1;
+        int in_h  = in_y1 - in_y0 + 1;
 
-        if (!isConnected) {
-            uint32_t c_dash = isDark ? 0xFFBBBBBB : 0xFF666666;
-            int dash_w = (size < 20) ? 4 * SS : 5 * SS;
-            int dash_h = 2 * SS;
-            int gap = 2 * SS;
-            int total_w = 2 * dash_w + gap;
-            int sx = in_x0 + (in_w - total_w) / 2;
-            int sy = in_y0 + (in_h - dash_h) / 2;
-            for (int y = 0; y < dash_h; ++y) {
-                for (int x = 0; x < dash_w; ++x) {
-                    HiPixel(sx + x, sy + y, c_dash);
-                    HiPixel(sx + dash_w + gap + x, sy + y, c_dash);
-                }
-            }
-        } else {
-            char s[8];
-            snprintf(s, sizeof(s), "%d", battery);
-            int len = (int)strlen(s);
+        if (isConnected && battery > 0) {
+            float ratio = std::clamp(battery / 100.0f, 0.08f, 1.0f);
+            int fill_w = std::max(L2S(2.0f), (int)(in_w * ratio));
+            FillRoundRect(in_x0, in_y0, in_x0 + fill_w, in_y1, c_fill, L2S(1.5f));
+        } else if (!isConnected) {
+            uint32_t c_dim = isDark ? 0x40606060 : 0x40B0B0B0;
+            FillRoundRect(in_x0, in_y0, in_x1, in_y1, c_dim, L2S(1.5f));
+            int dw = L2S(4.5f);
+            int dh = L2S(2.0f);
+            int sx = in_x0 + (in_w - dw) / 2;
+            int sy = in_y0 + (in_h - dh) / 2;
+            FillRoundRect(sx, sy, sx + dw, sy + dh, isDark ? 0xFFBBBBBB : 0xFF666666, 0);
+        }
 
-            bool useLargeFont = (in_h >= 9 * SS && in_w >= 12 * SS);
-            const int fw = useLargeFont ? 5 : 3;
-            const int fh = useLargeFont ? 9 : 5;
-            int gap_fp = (len == 1) ? 0 : 1;
-
-            int target_h = in_h * 85 / 100;
-            int scale = target_h / fh;
-            if (scale < 1) scale = 1;
-            int bold_w = (scale >= 2 * SS) ? 1 : 0;
-
-            auto CalcTextWidth = [&](int sc, int bw) -> int {
-                if (battery == 100 && useLargeFont) {
-                    return (2 * sc + bw) + (gap_fp * sc) + 2 * (4 * sc + bw) + (gap_fp * sc);
-                } else if (battery == 100) {
-                    return (sc + bw) + (gap_fp * sc) + 2 * (3 * sc + bw) + (gap_fp * sc);
-                } else {
-                    return len * (fw * sc + bw) + (len - 1) * (gap_fp * sc);
-                }
-            };
-
-            while (scale > 1 && CalcTextWidth(scale, bold_w) > in_w) {
-                --scale;
-            }
-
-            int text_h = fh * scale;
-            int text_w = CalcTextWidth(scale, bold_w);
-            int sx = in_x0 + (in_w - text_w) / 2;
-            int sy = in_y0 + (in_h - text_h) / 2;
-
-            if (battery == 100 && useLargeFont) {
-                int cur = sx;
-                for (int t = 0; t < 2 * scale + bold_w; ++t)
-                    for (int r = 0; r < text_h; ++r)
-                        HiPixel(cur + t, sy + r, c_digit);
-                cur += 2 * scale + bold_w + gap_fp * scale;
-                uint16_t rows9[9];
-                for (int r = 0; r < 9; ++r) rows9[r] = FONT_4X9_0[r];
-                DrawDigitScaled(rows9, 4, 9, cur, sy, scale, bold_w, c_digit);
-                cur += 4 * scale + bold_w + gap_fp * scale;
-                DrawDigitScaled(rows9, 4, 9, cur, sy, scale, bold_w, c_digit);
-            } else if (battery == 100) {
-                int cur = sx;
-                for (int t = 0; t < scale + bold_w; ++t)
-                    for (int r = 0; r < text_h; ++r)
-                        HiPixel(cur + t, sy + r, c_digit);
-                cur += scale + bold_w + gap_fp * scale;
-                uint16_t rows5[5];
-                for (int r = 0; r < 5; ++r) rows5[r] = FONT_3X5[0][r];
-                DrawDigitScaled(rows5, 3, 5, cur, sy, scale, bold_w, c_digit);
-                cur += 3 * scale + bold_w + gap_fp * scale;
-                DrawDigitScaled(rows5, 3, 5, cur, sy, scale, bold_w, c_digit);
-            } else {
-                int cur = sx;
-                for (int i = 0; i < len; ++i) {
-                    int d = s[i] - '0';
-                    if (useLargeFont) {
-                        DrawDigitScaled(FONT_5X9[d], 5, 9, cur, sy, scale, bold_w, c_digit);
-                    } else {
-                        uint16_t rows5[5];
-                        for (int r = 0; r < 5; ++r) rows5[r] = FONT_3X5[d][r];
-                        DrawDigitScaled(rows5, 3, 5, cur, sy, scale, bold_w, c_digit);
-                    }
-                    cur += fw * scale + bold_w + gap_fp * scale;
-                }
-            }
+        // 5. 充电状态：内部居中纯白闪电符号
+        if (isCharging) {
+            int bolt_sx = cav_x0 + (cav_x1 - cav_x0 + 1 - 3 * SS) / 2;
+            int bolt_sy = cav_y0 + (cav_y1 - cav_y0 + 1 - 7 * SS) / 2;
+            DrawBolt(bolt_sx, bolt_sy, 0xFFFFFFFF);
         }
     }
-    // Style 1: 配置二 (状态大圆点，不带数字)
+    // Style 1: 360° 环形电量进度圈 (复刻 logi-tray，加粗 3px 弧线，顺时针展开，圆弧两头圆角收口)
     else if (style == 1) {
-        uint32_t c_dot;
-        if (!isConnected) {
-            c_dot = isDark ? 0xFF6B7280 : 0xFF9CA3AF;
-        } else if (isCharging) {
-            c_dot = 0xFF22C55E; // Emerald Green
-        } else if (battery <= 30) {
-            c_dot = 0xFFEF4444; // Warning Red
-        } else {
-            c_dot = 0xFF3B82F6; // Tech Blue
-        }
+        float cx = (float)W / 2.0f;
+        float cy = (float)H / 2.0f;
+        float R  = (float)(size * SS) * 5.8f / 16.0f;
+        float T  = (float)(size * SS) * 3.0f / 16.0f;
 
-        int cx = W / 2;
-        int cy = H / 2;
-        // Big dot radius: ~34% of icon size, occupying around 68% diameter
-        int dot_r = (size * 34 / 100) * SS;
-        int r2 = dot_r * dot_r;
+        uint32_t c_track = isDark ? 0x40FFFFFF : 0x35000000;
+        uint32_t c_fill  = isCharging ? 0xFF22C55E : ((battery <= 30) ? 0xFFEF4444 : 0xFF3B82F6);
 
-        for (int y = cy - dot_r - 1; y <= cy + dot_r + 1; ++y) {
-            for (int x = cx - dot_r - 1; x <= cx + dot_r + 1; ++x) {
-                int dx = x - cx;
-                int dy = y - cy;
-                if (dx * dx + dy * dy <= r2) {
-                    HiPixel(x, y, c_dot);
+        float sweep = isConnected ? std::clamp(360.0f * (battery / 100.0f), 0.0f, 360.0f) : 0.0f;
+        float sweep_rad = sweep * 3.141592653589793f / 180.0f;
+        float cap_r = T / 2.0f;
+        float cap_r2 = cap_r * cap_r;
+
+        float sx_cap = cx;
+        float sy_cap = cy - R;
+        float ex_cap = cx + R * std::sin(sweep_rad);
+        float ey_cap = cy - R * std::cos(sweep_rad);
+
+        int minX = std::max(0, (int)(cx - R - T));
+        int maxX = std::min(W - 1, (int)(cx + R + T));
+        int minY = std::max(0, (int)(cy - R - T));
+        int maxY = std::min(H - 1, (int)(cy + R + T));
+
+        for (int y = minY; y <= maxY; ++y) {
+            for (int x = minX; x <= maxX; ++x) {
+                float px = (float)x + 0.5f;
+                float py = (float)y + 0.5f;
+                float dx = px - cx;
+                float dy = py - cy;
+                float dist = std::sqrt(dx * dx + dy * dy);
+
+                // Round cap at start
+                if (isConnected && battery > 0 && ((px - sx_cap) * (px - sx_cap) + (py - sy_cap) * (py - sy_cap) <= cap_r2)) {
+                    HiPixel(x, y, c_fill);
+                    continue;
+                }
+                // Round cap at end
+                if (isConnected && battery > 0 && ((px - ex_cap) * (px - ex_cap) + (py - ey_cap) * (py - ey_cap) <= cap_r2)) {
+                    HiPixel(x, y, c_fill);
+                    continue;
+                }
+
+                if (std::abs(dist - R) <= cap_r) {
+                    if (isConnected && battery > 0) {
+                        float angle = std::atan2(dx, -dy) * (180.0f / 3.141592653589793f);
+                        if (angle < 0.0f) angle += 360.0f;
+                        if (angle <= sweep) {
+                            HiPixel(x, y, c_fill);
+                        } else {
+                            HiPixel(x, y, c_track);
+                        }
+                    } else {
+                        HiPixel(x, y, c_track);
+                    }
                 }
             }
         }
+
+        // Central charging bolt
+        if (isCharging) {
+            DrawBolt((W - 3 * SS) / 2, (H - 7 * SS) / 2, c_fill);
+        } else if (!isConnected) {
+            int dw = L2S(4.0f);
+            int dh = L2S(2.0f);
+            FillRoundRect((W - dw) / 2, (H - dh) / 2, (W + dw) / 2, (H + dh) / 2, isDark ? 0xFF888888 : 0xFF666666, 0);
+        }
     }
-    // Style 2: 配置三 (大号纯数字，输入法中英风格，矢量抗锯齿)
+    // Style 2: 大号纯数字 + 底部细比例横轨 (复刻 logi-tray，大号粗体 Segoe UI，底部 2px 微横轨)
     else {
         COLORREF targetCol;
         if (!isConnected) {
@@ -1307,7 +1306,7 @@ HICON CreateBatteryIcon(int battery, bool isCharging, bool isConnected, int size
         } else if (battery <= 30) {
             targetCol = RGB(239, 68, 68); // Red
         } else {
-            targetCol = isDark ? RGB(255, 255, 255) : RGB(20, 20, 20); // White on dark, black on light
+            targetCol = isDark ? RGB(255, 255, 255) : RGB(20, 20, 20); // White / Dark
         }
 
         WCHAR sWide[16] = {0};
@@ -1317,7 +1316,7 @@ HICON CreateBatteryIcon(int battery, bool isCharging, bool isConnected, int size
             StringCchPrintfW(sWide, ARRAYSIZE(sWide), L"%d", battery);
         }
 
-        int fontH = (battery == 100) ? (-H * 55 / 100) : (-H * 74 / 100);
+        int fontH = (battery == 100) ? (-H * 52 / 100) : (-H * 70 / 100);
         HFONT hFont = CreateFontW(
             fontH, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -1329,7 +1328,8 @@ HICON CreateBatteryIcon(int battery, bool isCharging, bool isConnected, int size
         SetBkMode(hdcMem, TRANSPARENT);
         SetTextColor(hdcMem, RGB(255, 255, 255));
 
-        RECT rcText = { 0, -SS, W, H - SS }; // optical baseline adjustment
+        int textH = (int)(H * 13.5f / 16.0f);
+        RECT rcText = { 0, -SS, W, textH }; // Optical baseline shift
         DrawTextW(hdcMem, sWide, -1, &rcText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         GdiFlush();
@@ -1341,16 +1341,28 @@ HICON CreateBatteryIcon(int battery, bool isCharging, bool isConnected, int size
         uint8_t tG = GetGValue(targetCol);
         uint8_t tB = GetBValue(targetCol);
 
-        for (int y = 0; y < H; ++y) {
+        for (int y = 0; y < textH; ++y) {
             for (int x = 0; x < W; ++x) {
                 uint32_t raw = hi[y * W + x];
-                uint8_t gray = (raw & 0xFF); // R byte of white text
+                uint8_t gray = (raw & 0xFF);
                 if (gray > 0) {
                     hi[y * W + x] = ((uint32_t)gray << 24) | ((uint32_t)tR << 16) | ((uint32_t)tG << 8) | tB;
                 } else {
                     hi[y * W + x] = 0;
                 }
             }
+        }
+
+        // Bottom 2px Mini Bar
+        int bar_y0 = (int)(H * 14.0f / 16.0f);
+        int bar_y1 = H - 1;
+        uint32_t c_track = isDark ? 0x40FFFFFF : 0x30000000;
+        FillRoundRect(0, bar_y0, W - 1, bar_y1, c_track, SS / 2);
+
+        if (isConnected && battery > 0) {
+            uint32_t c_fill = isCharging ? 0xFF22C55E : ((battery <= 30) ? 0xFFEF4444 : 0xFF3B82F6);
+            int bar_w = std::clamp((int)(W * (battery / 100.0f)), 2 * SS, W);
+            FillRoundRect(0, bar_y0, bar_w - 1, bar_y1, c_fill, SS / 2);
         }
     }
 

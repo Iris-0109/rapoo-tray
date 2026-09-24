@@ -6,6 +6,7 @@
 #include "rapoo_protocol.h"
 #include "device_manager.h"
 #include "osd_window.h"
+#include "alert_window.h"
 #include "tray_menu.h"
 
 static const UINT WM_APP_TRAYMSG = WM_APP + 1;
@@ -43,6 +44,8 @@ static void RefreshTrayUI(const Device::State& state) {
         }
         g_hCurrentTrayIcon = hNewIcon;
     }
+
+    Alert::CheckBattery(state);
 }
 
 static void OnDeviceStateChanged(const Device::State& state, DWORD changeMask) {
@@ -172,8 +175,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     g_uTaskbarRestartMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
-    // Initialize OSD Window
+    // Initialize OSD and Alert Windows
     Osd::Init(hInstance);
+    Alert::Init(hInstance);
 
     // Register PnP Device notifications
     DEV_BROADCAST_DEVICEINTERFACE_W dbFilter = {0};
@@ -209,6 +213,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
     Device::Stop();
     Osd::Cleanup();
+    Alert::Cleanup();
 
     CloseHandle(hMutex);
     return 0;

@@ -29,7 +29,7 @@ jobs:
         run: |
           mkdir -p bin
           windres --codepage 65001 -I res -i res/app.rc -o bin/app.o
-          g++ -O3 -mwindows -municode -s -static src/main.cpp src/rapoo_protocol.cpp src/device_manager.cpp src/osd_window.cpp src/tray_menu.cpp bin/app.o -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -luxtheme -ldwmapi -o bin/rapoo-tray.exe
+          g++ -O3 -mwindows -municode -s -static src/main.cpp src/rapoo_protocol.cpp src/device_manager.cpp src/osd_window.cpp src/tray_menu.cpp src/alert_window.cpp bin/app.o -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -luxtheme -ldwmapi -o bin/rapoo-tray.exe
           rm -f bin/app.o
 
       - name: Build rapoo-tray-setup.exe (Installer)

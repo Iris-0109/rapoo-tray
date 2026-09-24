@@ -289,7 +289,7 @@ void ShowDpiUpdate(int level, int dpix, int dpiy, int battery, int pollingHz, bo
 }
 
 void ShowStyleOsd(int style) {
-    const WCHAR* names[] = { L"样式一：经典电池", L"样式二：状态圆点", L"样式三：大号数字" };
+    const WCHAR* names[] = { L"样式一：经典电池", L"样式二：环形进度", L"样式三：大号数字" };
     int idx = std::clamp(style, 0, 2);
     Show(L"电池图标样式", names[idx], L"双击托盘图标可循环切换");
 }
