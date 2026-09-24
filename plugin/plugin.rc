@@ -5,8 +5,8 @@
 IDI_PLUGIN_ICON ICON "green_dot.ico"
 
 1 VERSIONINFO
-FILEVERSION 1,3,0,0
-PRODUCTVERSION 1,3,0,0
+FILEVERSION 1,2,3,0
+PRODUCTVERSION 1,2,3,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Iris"
             VALUE "FileDescription", "TrafficMonitor 雷柏鼠标监控插件"
-            VALUE "FileVersion", "1.3.0.0"
+            VALUE "FileVersion", "1.2.3.0"
             VALUE "InternalName", "rapoo-plugin"
             VALUE "LegalCopyright", "Copyright (C) 2026 Iris"
             VALUE "OriginalFilename", "rapoo-plugin.dll"
             VALUE "ProductName", "TrafficMonitor Rapoo Plugin"
-            VALUE "ProductVersion", "1.3.0.0"
+            VALUE "ProductVersion", "1.2.3.0"
         END
     END
     BLOCK "VarFileInfo"

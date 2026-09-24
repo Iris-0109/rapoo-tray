@@ -297,9 +297,9 @@ class CMiniBatteryItem : public IPluginItem {
 public:
     const wchar_t* GetItemName() const override { return L"鼠标电量"; }
     const wchar_t* GetItemId() const override { return L"rapoo_mouse_battery"; }
-    const wchar_t* GetItemLableText() const override { return L"M:"; }
+    const wchar_t* GetItemLableText() const override;
     const wchar_t* GetItemValueText() const override;
-    const wchar_t* GetItemValueSampleText() const override { return L"⚡100%"; }
+    const wchar_t* GetItemValueSampleText() const override { return L"100%"; }
     bool IsCustomDraw() const override { return false; }
 };
 
@@ -343,13 +343,9 @@ public:
 
         if (connected) {
             if (bat >= 0) {
-                if (charging) {
-                    swprintf_s(m_batteryStr, L"⚡%d%%", bat);
-                } else {
-                    swprintf_s(m_batteryStr, L"%d%%", bat);
-                }
+                swprintf_s(m_batteryStr, L"%d%%", bat);
             } else {
-                wcscpy_s(m_batteryStr, charging ? L"⚡--" : L"--");
+                wcscpy_s(m_batteryStr, L"--");
             }
 
             if (dpi > 0) {
@@ -385,7 +381,7 @@ public:
         case TMI_DESCRIPTION: return L"在任务栏与悬浮窗实时显示雷柏鼠标电量与DPI";
         case TMI_AUTHOR:      return L"Iris";
         case TMI_COPYRIGHT:   return L"Copyright (C) 2026 Iris";
-        case TMI_VERSION:     return L"1.0.0";
+        case TMI_VERSION:     return L"1.2.3";
         case TMI_URL:         return L"https://github.com/Iris-0109/rapoo-tray";
         default:              return L"";
         }
@@ -415,6 +411,13 @@ private:
 };
 
 static CRapooPlugin g_plugin;
+
+const wchar_t* CMiniBatteryItem::GetItemLableText() const {
+    if (g_isCharging.load()) {
+        return L"⚡ ";
+    }
+    return L"🟢 ";
+}
 
 const wchar_t* CMiniBatteryItem::GetItemValueText() const {
     return g_plugin.GetBatteryText();
