@@ -19,14 +19,14 @@
 
 ---
 
-## 🚀 v1.2.0 核心更新
+## 🚀 新版本特性
 
-- **硬件兼容体系重构**：建立雷柏二代 Nordic 架构通用兼容机制，未打标机型自动归入通用模式，全功能 100% 完整支持；新增雷柏 VT3 MAX 型号识别。
+- **硬件兼容体系重构**：建立雷柏二代 Nordic 架构通用兼容机制，未打标机型自动归入通用模式，支持使用主要功能。
 - **托盘电池个性化**：新增 3 种展示风格：
-  - **配置一（经典电池）**：采用14px，5x9 点阵高清字体，清晰醒目。
-  - **配置二（状态大圆点）**：极简纯净大号无数字圆点。
-  - **配置三（大号矢量数字）**：采用 4 倍超采样（SSAA）抗锯齿算法，字体无毛边。
-- **DPI 动态自适应屏幕悬浮窗 (OSD)**：
+  - **配置一**：经典电池胶囊外观
+  - **配置二**：环形电量进度风格
+  - **配置三**：纯数字搭配底部横轨
+- **美化信息悬浮窗 (OSD)**：
   - 弃用固定宽框，改为毫秒级文本动态计算卡片宽度（`DT_CALCRECT`）。
   - 三行精简架构：`设备全称 DPI 数值` / `X 轴与 Y 轴独立分辨率` / `连接模式 | 当前档位 | 电量 | 回报率`。
   - 电量指示符号化：常规状态使用 `🔋`，充电中智能切换为 `⚡`。
@@ -38,9 +38,9 @@
 
 | 任务栏托盘图标 (双击循环切换 3 种样式) | OSD 屏幕自适应悬浮窗 (支持 X/Y 轴独立显示) |
 | :---: | :---: |
-| <img src="docs/screenshots/battery_style_1.png" height="42" alt="配置一：经典电池" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_2.png" height="42" alt="配置二：状态大圆点" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_3.png" height="42" alt="配置三：大号数字" /><br><sub>配置一：经典电池 &nbsp;·&nbsp; 配置二：状态圆点 &nbsp;·&nbsp; 配置三：大号数字（样式设计借鉴自 [logi-tray](https://github.com/dts-dan/logi-tray) 作者）</sub> | <img src="docs/screenshots/osd.png" width="300" alt="OSD 屏幕自适应悬浮窗" /> |
+| <img src="docs/screenshots/battery_style_1.png" height="42" alt="配置一：经典电池" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_2.png" height="42" alt="配置二：状态大圆点" /> &nbsp;&nbsp; <img src="docs/screenshots/battery_style_3.png" height="42" alt="配置三：大号数字" /><br><sub>配置一：经典电池 &nbsp;·&nbsp; 配置二：环形电量 &nbsp;·&nbsp; 配置三：滑轨数字</sub> | <img src="docs/screenshots/osd.png" width="300" alt="OSD 屏幕自适应悬浮窗" /> |
 
-| 原生 Fluent 亚克力右键控制面板 | 2~120 分钟连续平滑休眠滑动条 |
+|Fluent亚克力右键菜单 | 休眠调节滑块 |
 | :---: | :---: |
 | <img src="docs/screenshots/menu.png" width="220" alt="原生 Fluent 亚克力右键控制面板" /> | <img src="docs/screenshots/sleep_slider.png" width="260" alt="2~120 分钟连续平滑休眠滑动条" /> |
 
@@ -51,8 +51,8 @@
 | 操作手势 | 响应动作 | 视觉反馈 |
 | :--- | :--- | :--- |
 | **鼠标左键单击** | 唤起屏幕右下角状态指示窗 | 弹出当前设备型号、DPI、双轴数值、电量与回报率 OSD |
-| **鼠标左键双击** | 循环切换托盘电池图标样式 | 在“配置一 (经典电池)”、“配置二 (圆点)”、“配置三 (大号数字)”间轮换，并弹出 OSD 提示 |
-| **鼠标右键单击** | 打开 Fluent 亚克力系统菜单 | 查看真实电量、调节回报率（125Hz~8000Hz）、调节休眠时间、切换开机自启 |
+| **鼠标左键双击** | 循环切换托盘电池图标样式 | 在“配置一 (经典电池)”、“配置二 (环形电量)”、“配置三 (滑轨数字)”间轮换，并弹出 OSD 提示 |
+| **鼠标右键单击** | 打开 Fluent 亚克力托盘菜单 | 查看真实电量、调节回报率（125Hz~8000Hz）、调节休眠时间、切换开机自启 |
 
 ---
 
@@ -66,7 +66,7 @@
    - 配置与样式选择自动持久化保存于 Windows 注册表。
 3. **硬件级回报率与休眠控制**：
    - 支持 125Hz、250Hz、500Hz、1000Hz（标准）及 2000Hz、4000Hz、8000Hz（电竞高刷）即时切换。
-   - 休眠时间支持从 2 分钟到 120 分钟连续拖动与滚轮步进微调，配置即刻下发至鼠标硬件内部寄存器。
+   - 休眠时间支持从 2 分钟到 120 分钟拖块调节或滚轮调节，且配置即刻下发至硬件。
 4. **开机自启**：
    - 基于当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现，无需管理员权限，启动无弹窗干扰。
 
@@ -86,7 +86,7 @@
 ### 💡 通用兼容机制与型号提报指南
 
 1. **二代 Nordic 架构全功能即插即用**：
-   雷柏二代游戏鼠标（基于 Nordic 54L15 / 3950 方案）在底层通信报文协议（UsagePage `0xFF00`、Report ID `0x07` 与控制指令集）上完全统一。即使您的鼠标尚未打标，程序也会自动以 **`通用`** 模式挂载运行，**电量读取、DPI 切换、回报率设置与休眠控制均 100% 完整支持**。
+   雷柏二代游戏鼠标（基于 Nordic 54L15 / 3950 方案）在底层通信报文协议（UsagePage `0xFF00`、Report ID `0x07` 与控制指令集）上完全统一。即使您的鼠标尚未打标，程序也会自动以 **`通用`** 模式挂载运行，**电量读取、DPI 切换、回报率设置与休眠控制均支持使用**。
 2. **一键提取鼠标硬件 PID 并提交 PR（仅需 1 行代码）**：
    插入鼠标后，直接双击运行项目根目录下的 **`获取鼠标PID.bat`**（或执行 `tools/get_mouse_pid.ps1`），脚本会自动提取鼠标硬件 PID 并生成代码片段复制到剪贴板；也可在 PowerShell 中手动执行：
    ```powershell
@@ -167,10 +167,9 @@ build_installer.bat
 ## 🤝 鸣谢与致敬 (Credits & Acknowledgments)
 
 - **[@Nuitfanee](https://github.com/Nuitfanee)** ([ClickSync](https://github.com/Nuitfanee/ClickSync))：提供了雷柏双向控制协议逆向与寄存器地址映射的关键技术启发。
+- **[@dts-dan](https://github.com/dts-dan)** ([logi-tray](https://github.com/dts-dan/logi-tray))：提供了托盘电池图标的设计灵感与创意启发。
 - **[@hsb689](https://github.com/hsb689)**：提供了雷柏 VT3S 系列硬件 PID 数据。
 - **[@sAchNMN](https://github.com/sAchNMN)**：提供了雷柏 VT3 MAX 系列硬件 PID 数据。
-- **[@dts-dan](https://github.com/dts-dan)** ([logi-tray](https://github.com/dts-dan/logi-tray))：提供了托盘电池多态个性化图标样式的设计灵感与创意启发。
-
 
 ---
 
