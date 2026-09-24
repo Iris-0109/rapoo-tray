@@ -55,9 +55,11 @@ DWORD BuildReadCommand(BYTE bank, BYTE addr, BYTE readLen, BYTE* outBuf, DWORD b
 bool ParseStatusReport(const BYTE* buf, DWORD bytesRead, DeviceStatus& outStatus, int cachedBattery) {
     if (!buf || bytesRead < 9) return false;
     if (buf[0] != REPORT_ID_STATUS) return false;
-    // Device marker: 0x20 (2.4G dongle), 0x10 (wired USB direct)
-    if (buf[1] != 0x20 && buf[1] != 0x10) return false;
-    outStatus.isWired = (buf[1] == 0x10);
+    // Device marker: 0x20 (2.4G dongle), 0x10 (wired USB direct).
+    // Charging sets bit1 (0x12 = 0x10|0x02), so mask bit1 out before compare.
+    BYTE marker = buf[1] & 0xFD;
+    if (marker != 0x20 && marker != 0x10) return false;
+    outStatus.isWired = (marker == 0x10);
 
     outStatus.dpiLevel = (int)buf[2] + 1;
     outStatus.dpiX = (int)buf[3] | ((int)buf[4] << 8);

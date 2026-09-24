@@ -140,6 +140,7 @@ static const RapooModelEntry VERIFIED_MODELS[] = {
     { L"1410", L"雷柏 VT3S" },
     { L"4606", L"雷柏 VT3S" },
     { L"1411", L"雷柏 VT3S" },
+    { L"4611", L"雷柏 VT3S" },
 
     // 雷柏 VT3 MAX 系列 (实测已验证 - PR #3 by @sAchNMN)
     { L"1417", L"雷柏 VT3 MAX" },
@@ -177,8 +178,10 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
     bool isWired = false;
 
     // Phase 1: Determine the target device.
-    // First scan: look specifically for wired Rapoo mice (pid_46xx or pid_1411).
-    // If a wired device is found, prioritize it over wireless dongles!
+    // VT3s exposes TWO PIDs at once when the cable is plugged while the
+    // dongle stays connected: pid_1411 = 2.4G dongle, pid_46xx = wired.
+    // The dongle endpoint goes silent while the mouse talks over the wire,
+    // so ALWAYS prefer a pid_46xx (wired) device first.
     for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
         DWORD reqSize = 0;
         SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
@@ -195,20 +198,18 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
 
             if (wcsstr(lower, L"vid_24ae")) {
                 const WCHAR* pPid = wcsstr(lower, L"pid_");
-                if (pPid) {
-                    if (wcsstr(pPid, L"pid_46") || wcsstr(pPid, L"pid_1411")) {
-                        StringCchCopyNW(targetPid, 32, pPid, 8);
-                        isWired = true;
-                        free(pDetail);
-                        break;
-                    }
+                if (pPid && wcsstr(pPid, L"pid_46")) {
+                    StringCchCopyNW(targetPid, 32, pPid, 8);
+                    isWired = true;
+                    free(pDetail);
+                    break;
                 }
             }
         }
         free(pDetail);
     }
 
-    // Second scan: if no wired device found, look for wireless dongles
+    // Second scan: no wired device — take any Rapoo VID (dongle etc.)
     if (targetPid[0] == 0) {
         for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
             DWORD reqSize = 0;
@@ -483,6 +484,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
 
         BYTE buf[65] = {0};
         DWORD bytesRead = 0;
+        bool gotFirstPacket = false; // no ping-alive judgement until mode is known
 
         while (WaitForSingleObject(g_hStopEvent, 0) == WAIT_TIMEOUT) {
             ResetEvent(hReadEvent);
@@ -511,31 +513,34 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         CancelIo(hStatus);
                         GetOverlappedResult(hStatus, &ov, &bytesRead, FALSE);
 
-                        // Dongle mode only: probe the mouse with a ping to
-                        // distinguish sleep vs disconnected (wired reports
-                        // packets directly, no ping needed).
-                        bool wiredNow;
-                        EnterCriticalSection(&g_csState);
-                        wiredNow = g_currentState.isWired;
-                        LeaveCriticalSection(&g_csState);
-                        if (!wiredNow) {
-                            int hz = 0;
-                            bool alive = PingDevice(hz);
-                            if (!alive) {
-                                EnterCriticalSection(&g_csState);
-                                bool wasConn = g_currentState.isConnected;
-                                g_currentState.isConnected = false;
-                                g_currentState.isCharging = false;
-                                State copySt = g_currentState;
-                                LeaveCriticalSection(&g_csState);
-                                if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
-                            } else {
-                                EnterCriticalSection(&g_csState);
-                                bool wasConn = g_currentState.isConnected;
-                                g_currentState.isConnected = true;
-                                State copySt = g_currentState;
-                                LeaveCriticalSection(&g_csState);
-                                if (!wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED);
+                        // Ping-alive probe is only meaningful in dongle mode,
+                        // and only after the packet marker told us the mode.
+                        // (Wired devices may not answer the feature ping, and
+                        // before the first packet isWired is still the default.)
+                        if (gotFirstPacket) {
+                            bool wiredNow;
+                            EnterCriticalSection(&g_csState);
+                            wiredNow = g_currentState.isWired;
+                            LeaveCriticalSection(&g_csState);
+                            if (!wiredNow) {
+                                int hz = 0;
+                                bool alive = PingDevice(hz);
+                                if (!alive) {
+                                    EnterCriticalSection(&g_csState);
+                                    bool wasConn = g_currentState.isConnected;
+                                    g_currentState.isConnected = false;
+                                    g_currentState.isCharging = false;
+                                    State copySt = g_currentState;
+                                    LeaveCriticalSection(&g_csState);
+                                    if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
+                                } else {
+                                    EnterCriticalSection(&g_csState);
+                                    bool wasConn = g_currentState.isConnected;
+                                    g_currentState.isConnected = true;
+                                    State copySt = g_currentState;
+                                    LeaveCriticalSection(&g_csState);
+                                    if (!wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED);
+                                }
                             }
                         }
                         continue;
@@ -555,6 +560,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             // Parse status broadcast using ClickSync standard parser
             Rapoo::DeviceStatus devStatus;
             if (Rapoo::ParseStatusReport(buf, bytesRead, devStatus, g_cachedBattery)) {
+                gotFirstPacket = true;
                 // NOTE: wired USB direct connect does NOT imply charging.
                 // Trust the protocol-level charging flag for all modes.
 
