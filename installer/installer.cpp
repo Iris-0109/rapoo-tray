@@ -22,12 +22,15 @@
 #define IDC_CHK_AUTORUN      2003
 #define IDC_CHK_DESKTOP      2004
 #define IDC_CHK_LAUNCH       2005
+#define IDC_EDT_PATH         2006
+#define IDC_BTN_BROWSE       2007
 
 static HINSTANCE g_hInstance = NULL;
 static HWND g_hMainWnd = NULL;
 static HWND g_hChkAutoRun = NULL;
 static HWND g_hChkDesktop = NULL;
 static HWND g_hChkLaunch = NULL;
+static HWND g_hEdtPath = NULL;
 static HWND g_hBtnInstall = NULL;
 static HWND g_hBtnCancel = NULL;
 static HFONT g_hFontTitle = NULL;
@@ -113,6 +116,33 @@ static bool GetInstallDir(WCHAR* outDir, DWORD maxLen) {
     return true;
 }
 
+// Uninstaller: read install dir saved by the installer at install time
+static bool GetSavedInstallDir(WCHAR* outDir, DWORD maxLen) {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_UNINSTALL, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD len = maxLen * sizeof(WCHAR);
+    LSTATUS st = RegQueryValueExW(hKey, L"InstallLocation", NULL, NULL, (LPBYTE)outDir, &len);
+    RegCloseKey(hKey);
+    return (st == ERROR_SUCCESS && outDir[0] != 0);
+}
+
+// Browse-for-folder dialog -> selected path or empty string on cancel
+static bool BrowseForFolder(HWND hWnd, WCHAR* outDir, DWORD maxLen) {
+    WCHAR buf[MAX_PATH] = {0};
+    BROWSEINFOW bi = {0};
+    bi.hwndOwner = hWnd;
+    bi.lpszTitle = L"选择安装文件夹";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return false;
+    bool ok = SHGetPathFromIDListW(pidl, buf) && buf[0] != 0;
+    CoTaskMemFree(pidl);
+    if (ok) StringCchCopyNW(outDir, maxLen, buf, maxLen - 1);
+    return ok;
+}
+
 // Perform Installation
 static void DoInstall() {
     EnableWindow(g_hBtnInstall, FALSE);
@@ -121,10 +151,14 @@ static void DoInstall() {
     // 1. Terminate old running instances
     TerminateAppProcess();
 
-    // 2. Prepare directories
+    // 2. Prepare directories (user-editable path)
     WCHAR installDir[MAX_PATH];
-    if (!GetInstallDir(installDir, MAX_PATH)) {
-        MessageBoxW(g_hMainWnd, L"无法获取安装路径。", L"错误", MB_ICONERROR);
+    GetWindowTextW(g_hEdtPath, installDir, MAX_PATH);
+    // Trim trailing backslash (but keep "X:\")
+    size_t dlen = wcslen(installDir);
+    while (dlen > 3 && installDir[dlen - 1] == L'\\') { installDir[dlen - 1] = 0; --dlen; }
+    if (installDir[0] == 0 || installDir[1] != L':') {
+        MessageBoxW(g_hMainWnd, L"请输入有效的安装路径。", L"错误", MB_ICONERROR);
         EnableWindow(g_hBtnInstall, TRUE);
         EnableWindow(g_hBtnCancel, TRUE);
         return;
@@ -245,8 +279,13 @@ static void DoUninstall() {
     RegDeleteKeyW(HKEY_CURRENT_USER, REG_UNINSTALL);
 
     // 5. Delete files and remove directory
+    // Prefer the install dir saved in the registry (supports custom paths);
+    // fall back to the default location for older installs.
     WCHAR installDir[MAX_PATH];
-    if (GetInstallDir(installDir, MAX_PATH)) {
+    if (!GetSavedInstallDir(installDir, MAX_PATH)) {
+        GetInstallDir(installDir, MAX_PATH);
+    }
+    {
         WCHAR appExe[MAX_PATH];
         StringCchPrintfW(appExe, MAX_PATH, L"%s\\rapoo-tray.exe", installDir);
         DeleteFileW(appExe);
@@ -273,32 +312,36 @@ static LRESULT CALLBACK InstallerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             HWND hTitle = CreateWindowExW(0, L"STATIC", L"rapoo-tray Setup", WS_CHILD | WS_VISIBLE, 24, 20, 360, 24, hWnd, NULL, g_hInstance, NULL);
             SendMessageW(hTitle, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
 
-            // Install Path
+            // Install Path (editable)
             WCHAR installDir[MAX_PATH];
             GetInstallDir(installDir, MAX_PATH);
-            WCHAR pathMsg[MAX_PATH + 32];
-            StringCchPrintfW(pathMsg, MAX_PATH + 32, L"安装路径: %s", installDir);
-            HWND hPath = CreateWindowExW(0, L"STATIC", pathMsg, WS_CHILD | WS_VISIBLE, 24, 56, 380, 20, hWnd, NULL, g_hInstance, NULL);
-            SendMessageW(hPath, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
+            HWND hPathLabel = CreateWindowExW(0, L"STATIC", L"安装路径:", WS_CHILD | WS_VISIBLE, 24, 52, 70, 20, hWnd, NULL, g_hInstance, NULL);
+            SendMessageW(hPathLabel, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
+
+            g_hEdtPath = CreateWindowExW(0, L"EDIT", installDir, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 94, 50, 240, 24, hWnd, (HMENU)IDC_EDT_PATH, g_hInstance, NULL);
+            SendMessageW(g_hEdtPath, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
+
+            HWND hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340, 49, 72, 26, hWnd, (HMENU)IDC_BTN_BROWSE, g_hInstance, NULL);
+            SendMessageW(hBtnBrowse, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
 
             // Options
-            g_hChkAutoRun = CreateWindowExW(0, L"BUTTON", L"开机自动启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 90, 200, 22, hWnd, (HMENU)IDC_CHK_AUTORUN, g_hInstance, NULL);
+            g_hChkAutoRun = CreateWindowExW(0, L"BUTTON", L"开机自动启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 92, 200, 22, hWnd, (HMENU)IDC_CHK_AUTORUN, g_hInstance, NULL);
             SendMessageW(g_hChkAutoRun, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
             SendMessageW(g_hChkAutoRun, BM_SETCHECK, BST_CHECKED, 0);
 
-            g_hChkDesktop = CreateWindowExW(0, L"BUTTON", L"创建桌面快捷方式", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 118, 200, 22, hWnd, (HMENU)IDC_CHK_DESKTOP, g_hInstance, NULL);
+            g_hChkDesktop = CreateWindowExW(0, L"BUTTON", L"创建桌面快捷方式", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 120, 200, 22, hWnd, (HMENU)IDC_CHK_DESKTOP, g_hInstance, NULL);
             SendMessageW(g_hChkDesktop, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
             SendMessageW(g_hChkDesktop, BM_SETCHECK, BST_CHECKED, 0);
 
-            g_hChkLaunch = CreateWindowExW(0, L"BUTTON", L"安装完成后立即运行", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 146, 200, 22, hWnd, (HMENU)IDC_CHK_LAUNCH, g_hInstance, NULL);
+            g_hChkLaunch = CreateWindowExW(0, L"BUTTON", L"安装完成后立即运行", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 24, 148, 200, 22, hWnd, (HMENU)IDC_CHK_LAUNCH, g_hInstance, NULL);
             SendMessageW(g_hChkLaunch, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
             SendMessageW(g_hChkLaunch, BM_SETCHECK, BST_CHECKED, 0);
 
             // Buttons
-            g_hBtnInstall = CreateWindowExW(0, L"BUTTON", L"安装", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 216, 186, 88, 30, hWnd, (HMENU)IDC_BTN_INSTALL, g_hInstance, NULL);
+            g_hBtnInstall = CreateWindowExW(0, L"BUTTON", L"安装", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 216, 188, 88, 30, hWnd, (HMENU)IDC_BTN_INSTALL, g_hInstance, NULL);
             SendMessageW(g_hBtnInstall, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
 
-            g_hBtnCancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 314, 186, 88, 30, hWnd, (HMENU)IDC_BTN_CANCEL, g_hInstance, NULL);
+            g_hBtnCancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 314, 188, 88, 30, hWnd, (HMENU)IDC_BTN_CANCEL, g_hInstance, NULL);
             SendMessageW(g_hBtnCancel, WM_SETFONT, (WPARAM)g_hFontBody, TRUE);
 
             return 0;
@@ -316,6 +359,11 @@ static LRESULT CALLBACK InstallerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 DoInstall();
             } else if (wmId == IDC_BTN_CANCEL) {
                 DestroyWindow(hWnd);
+            } else if (wmId == IDC_BTN_BROWSE) {
+                WCHAR dir[MAX_PATH];
+                if (BrowseForFolder(hWnd, dir, MAX_PATH)) {
+                    SetWindowTextW(g_hEdtPath, dir);
+                }
             }
             return 0;
         }

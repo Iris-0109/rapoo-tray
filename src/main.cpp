@@ -1,7 +1,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <dbt.h>
+extern "C" {
 #include <hidsdi.h>
+}
 #include <strsafe.h>
 #include "rapoo_protocol.h"
 #include "device_manager.h"
