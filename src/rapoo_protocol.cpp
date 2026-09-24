@@ -56,10 +56,10 @@ bool ParseStatusReport(const BYTE* buf, DWORD bytesRead, DeviceStatus& outStatus
     if (!buf || bytesRead < 9) return false;
     if (buf[0] != REPORT_ID_STATUS) return false;
     // Device marker: 0x20 (2.4G dongle), 0x10 (wired USB direct).
-    // Charging sets bit1 (0x12 = 0x10|0x02), so mask bit1 out before compare.
-    BYTE marker = buf[1] & 0xFD;
-    if (marker != 0x20 && marker != 0x10) return false;
-    outStatus.isWired = (marker == 0x10);
+    // High nibble contains device mode; lower nibble carries dynamic status bits.
+    BYTE modeNibble = buf[1] & 0xF0;
+    if (modeNibble != 0x20 && modeNibble != 0x10) return false;
+    outStatus.isWired = (modeNibble == 0x10);
 
     outStatus.dpiLevel = (int)buf[2] + 1;
     outStatus.dpiX = (int)buf[3] | ((int)buf[4] << 8);

@@ -65,8 +65,20 @@ static std::atomic<bool> g_connected{ false };
 static WCHAR g_curModelName[64] = L"通用";
 static WCHAR g_curModeName[32] = L"未连接";
 
-// Dynamic device path scanner with generic fallback (single-pass enumeration)
-static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, DWORD maxModelLen, WCHAR* outMode, DWORD maxModeLen) {
+static int LoadRegistryBattery() {
+    HKEY hKey;
+    DWORD val = 100;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\rapoo-tray", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD type = 0, size = sizeof(DWORD);
+        RegQueryValueExW(hKey, L"LastBattery", NULL, &type, (LPBYTE)&val, &size);
+        RegCloseKey(hKey);
+    }
+    if (val >= 2 && val <= 100) return (int)val;
+    return -1;
+}
+
+// Dynamic device path scanner with wired priority (two-pass enumeration)
+static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, DWORD maxModelLen, WCHAR* outMode, DWORD maxModeLen, bool* outIsWired = nullptr) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
 
@@ -77,7 +89,9 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
     devData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
 
     bool found = false;
+    bool isWiredDevice = false;
 
+    // Pass 1: scan specifically for wired Rapoo mouse (pid_46)
     for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
         DWORD reqSize = 0;
         SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
@@ -92,7 +106,7 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
             StringCchCopyW(lowerPath, MAX_PATH, pDetail->DevicePath);
             _wcslwr_s(lowerPath, MAX_PATH);
 
-            if (wcsstr(lowerPath, L"vid_24ae")) {
+            if (wcsstr(lowerPath, L"vid_24ae") && wcsstr(lowerPath, L"pid_46")) {
                 HANDLE hProbe = CreateFileW(
                     pDetail->DevicePath,
                     GENERIC_READ,
@@ -122,19 +136,20 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
                             if (caps.UsagePage == 0xFF00) {
                                 if (caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09")) || (caps.InputReportByteLength == 19 && caps.Usage != 0x000E)) {
                                     StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
+                                    isWiredDevice = true;
                                     bool matched = false;
                                     for (const auto& dev : SUPPORTED_DEVICES) {
                                         if (wcsstr(lowerPath, dev.pid_sub)) {
                                             if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, dev.model_name);
-                                            if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, dev.mode_name);
                                             matched = true;
                                             break;
                                         }
                                     }
-                                    if (!matched) {
-                                        bool isWired = (wcsstr(lowerPath, L"pid_46") || wcsstr(lowerPath, L"pid_1411"));
-                                        if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"通用");
-                                        if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, isWired ? L"USB有线模式" : L"2.4G无线模式");
+                                    if (!matched && outModel && maxModelLen > 0) {
+                                        StringCchCopyW(outModel, maxModelLen, L"通用");
+                                    }
+                                    if (outMode && maxModeLen > 0) {
+                                        StringCchCopyW(outMode, maxModeLen, L"USB有线模式");
                                     }
                                     found = true;
                                 }
@@ -144,17 +159,91 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
                     }
                     CloseHandle(hProbe);
                 }
-
-                if (found) {
-                    free(pDetail);
-                    break;
-                }
             }
         }
         free(pDetail);
+        if (found) break;
+    }
+
+    // Pass 2: fallback to 2.4G wireless dongle if no wired mouse is connected
+    if (!found) {
+        for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
+            DWORD reqSize = 0;
+            SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
+            if (reqSize == 0) continue;
+
+            PSP_DEVICE_INTERFACE_DETAIL_DATA_W pDetail = (PSP_DEVICE_INTERFACE_DETAIL_DATA_W)malloc(reqSize);
+            if (!pDetail) continue;
+
+            pDetail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            if (SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, pDetail, reqSize, NULL, NULL)) {
+                WCHAR lowerPath[MAX_PATH];
+                StringCchCopyW(lowerPath, MAX_PATH, pDetail->DevicePath);
+                _wcslwr_s(lowerPath, MAX_PATH);
+
+                if (wcsstr(lowerPath, L"vid_24ae")) {
+                    HANDLE hProbe = CreateFileW(
+                        pDetail->DevicePath,
+                        GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL
+                    );
+                    if (hProbe == INVALID_HANDLE_VALUE) {
+                        hProbe = CreateFileW(
+                            pDetail->DevicePath,
+                            0,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            NULL,
+                            OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL,
+                            NULL
+                        );
+                    }
+
+                    if (hProbe != INVALID_HANDLE_VALUE) {
+                        PHIDP_PREPARSED_DATA pData = NULL;
+                        if (HidD_GetPreparsedData(hProbe, &pData)) {
+                            HIDP_CAPS caps;
+                            if (HidP_GetCaps(pData, &caps) == HIDP_STATUS_SUCCESS) {
+                                if (caps.UsagePage == 0xFF00) {
+                                    if (caps.Usage == 0x0002 || (caps.InputReportByteLength >= 19 && wcsstr(lowerPath, L"col09")) || (caps.InputReportByteLength == 19 && caps.Usage != 0x000E)) {
+                                        StringCchCopyW(outPath, maxLen, pDetail->DevicePath);
+                                        isWiredDevice = (wcsstr(lowerPath, L"pid_46") || wcsstr(lowerPath, L"pid_1411"));
+                                        bool matched = false;
+                                        for (const auto& dev : SUPPORTED_DEVICES) {
+                                            if (wcsstr(lowerPath, dev.pid_sub)) {
+                                                if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, dev.model_name);
+                                                if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, dev.mode_name);
+                                                matched = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!matched) {
+                                            if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"通用");
+                                            if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, isWiredDevice ? L"USB有线模式" : L"2.4G无线模式");
+                                        }
+                                        found = true;
+                                    }
+                                }
+                            }
+                            HidD_FreePreparsedData(pData);
+                        }
+                        CloseHandle(hProbe);
+                    }
+                }
+            }
+            free(pDetail);
+            if (found) break;
+        }
     }
 
     SetupDiDestroyDeviceInfoList(hDevInfo);
+    if (found && outIsWired) {
+        *outIsWired = isWiredDevice;
+    }
     return found;
 }
 
@@ -163,9 +252,16 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
     WCHAR devPath[MAX_PATH] = { 0 };
     WCHAR modelBuf[64] = { 0 };
     WCHAR modeBuf[32] = { 0 };
+    bool isWired = false;
+
+    // Load initial battery from registry cache
+    int regBat = LoadRegistryBattery();
+    if (regBat >= 2 && regBat <= 100) {
+        g_battery.store(regBat);
+    }
 
     while (WaitForSingleObject(g_hStopEvent, 200) == WAIT_TIMEOUT) {
-        if (!FindRapooDevicePath(devPath, MAX_PATH, modelBuf, 64, modeBuf, 32)) {
+        if (!FindRapooDevicePath(devPath, MAX_PATH, modelBuf, 64, modeBuf, 32, &isWired)) {
             g_connected.store(false);
             Sleep(1500);
             continue;
@@ -190,6 +286,9 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         StringCchCopyW(g_curModelName, ARRAYSIZE(g_curModelName), modelBuf);
         StringCchCopyW(g_curModeName, ARRAYSIZE(g_curModeName), modeBuf);
         g_connected.store(true);
+        if (isWired) {
+            g_isCharging.store(true);
+        }
 
         HANDLE hReadEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         OVERLAPPED ov = { 0 };
@@ -205,7 +304,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 DWORD err = GetLastError();
                 if (err == ERROR_IO_PENDING) {
                     HANDLE waitHandles[2] = { g_hStopEvent, hReadEvent };
-                    DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+                    DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, 2500);
                     if (waitRes == WAIT_OBJECT_0) {
                         CancelIo(hDev);
                         break;
@@ -213,6 +312,20 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         if (!GetOverlappedResult(hDev, &ov, &bytesRead, FALSE)) {
                             break;
                         }
+                    } else if (waitRes == WAIT_TIMEOUT) {
+                        // Periodic check: detect wired cable hotplug / unplug
+                        CancelIo(hDev);
+                        WCHAR testPath[MAX_PATH] = { 0 };
+                        WCHAR testM[64] = { 0 };
+                        WCHAR testMode[32] = { 0 };
+                        bool testWired = false;
+                        if (FindRapooDevicePath(testPath, MAX_PATH, testM, 64, testMode, 32, &testWired)) {
+                            if (testWired != isWired) {
+                                // Connection mode switched! Reconnect to new endpoint!
+                                break;
+                            }
+                        }
+                        continue;
                     } else {
                         CancelIo(hDev);
                         break;
@@ -222,18 +335,18 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 }
             }
 
-            if (bytesRead >= 9 && buf[0] == 0x07 && buf[1] == 0x20) {
+            BYTE modeNibble = buf[1] & 0xF0;
+            if (bytesRead >= 9 && buf[0] == 0x07 && (modeNibble == 0x20 || modeNibble == 0x10)) {
                 int level = (int)buf[2] + 1;
                 int dpi   = (int)buf[3] | ((int)buf[4] << 8);
                 BYTE statusByte = buf[7];
                 BYTE rawBat     = buf[8];
                 BYTE extraByte  = (bytesRead > 9) ? buf[9] : 0;
 
-                // 充电状态检测 (与 rapoo-tray 硬件状态机严格一致)
-                bool charging = ((statusByte & 0x02) != 0 || statusByte == 0x02 || statusByte == 0x03 ||
+                bool effWired = isWired || (modeNibble == 0x10);
+                bool charging = effWired || ((statusByte & 0x02) != 0 || statusByte == 0x02 || statusByte == 0x03 ||
                                  extraByte == 0x01 || extraByte == 0x02);
 
-                // 电量滤波：防止 USB 握手瞬态 0/1% 导致跳闪
                 int bat = rawBat;
                 if (rawBat <= 1) {
                     int cached = g_battery.load();
@@ -251,6 +364,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                 g_dpi.store(dpi);
                 g_dpiLevel.store(level);
                 g_connected.store(true);
+                StringCchCopyW(g_curModeName, ARRAYSIZE(g_curModeName), effWired ? L"USB有线模式" : L"2.4G无线模式");
             }
         }
 
@@ -258,7 +372,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         g_isCharging.store(false);
         CloseHandle(hReadEvent);
         CloseHandle(hDev);
-        Sleep(1000);
+        Sleep(500);
     }
 
     return 0;
@@ -385,7 +499,7 @@ public:
         case TMI_DESCRIPTION: return L"在任务栏与悬浮窗实时显示雷柏鼠标电量与DPI";
         case TMI_AUTHOR:      return L"Iris";
         case TMI_COPYRIGHT:   return L"Copyright (C) 2026 Iris";
-        case TMI_VERSION:     return L"1.2.3";
+        case TMI_VERSION:     return L"1.3.0";
         case TMI_URL:         return L"https://github.com/Iris-0109/rapoo-tray";
         default:              return L"";
         }

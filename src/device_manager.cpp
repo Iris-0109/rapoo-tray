@@ -178,35 +178,42 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
     bool isWired = false;
 
     // Phase 1: Determine the target device.
-    // VT3s exposes TWO PIDs at once when the cable is plugged while the
-    // dongle stays connected: pid_1411 = 2.4G dongle, pid_46xx = wired.
-    // The dongle endpoint goes silent while the mouse talks over the wire,
-    // so ALWAYS prefer a pid_46xx (wired) device first.
-    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
-        DWORD reqSize = 0;
-        SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
-        if (reqSize == 0) continue;
+    // Scan 1: look specifically for wired Rapoo mice (pid_46xx).
+    // If a cable was just plugged in, give Windows PnP up to 500ms to register HID child interfaces.
+    for (int retry = 0; retry < 3 && targetPid[0] == 0; ++retry) {
+        if (retry > 0) {
+            Sleep(250);
+            SetupDiDestroyDeviceInfoList(hDevInfo);
+            hDevInfo = SetupDiGetClassDevsW(&hidGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+            if (hDevInfo == INVALID_HANDLE_VALUE) return false;
+        }
 
-        PSP_DEVICE_INTERFACE_DETAIL_DATA_W pDetail = (PSP_DEVICE_INTERFACE_DETAIL_DATA_W)malloc(reqSize);
-        if (!pDetail) continue;
+        for (DWORD i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &hidGuid, i, &devData); ++i) {
+            DWORD reqSize = 0;
+            SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, NULL, 0, &reqSize, NULL);
+            if (reqSize == 0) continue;
 
-        pDetail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        if (SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, pDetail, reqSize, NULL, NULL)) {
-            WCHAR lower[MAX_PATH];
-            StringCchCopyW(lower, MAX_PATH, pDetail->DevicePath);
-            _wcslwr_s(lower, MAX_PATH);
+            PSP_DEVICE_INTERFACE_DETAIL_DATA_W pDetail = (PSP_DEVICE_INTERFACE_DETAIL_DATA_W)malloc(reqSize);
+            if (!pDetail) continue;
 
-            if (wcsstr(lower, L"vid_24ae")) {
-                const WCHAR* pPid = wcsstr(lower, L"pid_");
-                if (pPid && wcsstr(pPid, L"pid_46")) {
-                    StringCchCopyNW(targetPid, 32, pPid, 8);
-                    isWired = true;
-                    free(pDetail);
-                    break;
+            pDetail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            if (SetupDiGetDeviceInterfaceDetailW(hDevInfo, &devData, pDetail, reqSize, NULL, NULL)) {
+                WCHAR lower[MAX_PATH];
+                StringCchCopyW(lower, MAX_PATH, pDetail->DevicePath);
+                _wcslwr_s(lower, MAX_PATH);
+
+                if (wcsstr(lower, L"vid_24ae")) {
+                    const WCHAR* pPid = wcsstr(lower, L"pid_");
+                    if (pPid && wcsstr(pPid, L"pid_46")) {
+                        StringCchCopyNW(targetPid, 32, pPid, 8);
+                        isWired = true;
+                        free(pDetail);
+                        break;
+                    }
                 }
             }
+            free(pDetail);
         }
-        free(pDetail);
     }
 
     // Second scan: no wired device — take any Rapoo VID (dongle etc.)
@@ -319,7 +326,8 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
     }
     SetupDiDestroyDeviceInfoList(hDevInfo);
 
-    if (foundStatus) {
+    bool ok = (foundStatus && pathControl[0] != 0);
+    if (ok) {
         if (outModel && maxModelLen > 0) {
             ResolveRapooModelName(targetPid, outModel, maxModelLen);
         }
@@ -328,7 +336,7 @@ static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pat
         }
     }
 
-    return foundStatus;
+    return ok;
 }
 
 static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
@@ -439,14 +447,14 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
 
         EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
-        // Connection mode comes from the status packet device marker
-        // (0x10 wired / 0x20 dongle); PID-based guess is unreliable for
-        // devices whose dongle and wired share the same PID (e.g. VT3s).
-        g_currentState.isWired = false;
+        g_currentState.isWired = isWired;
+        if (isWired) {
+            g_currentState.isCharging = true;
+        }
         g_currentState.isConnected = true;
         State connSt = g_currentState;
         LeaveCriticalSection(&g_csState);
-        if (g_callback) g_callback(connSt, CHANGE_CONNECTED);
+        if (g_callback) g_callback(connSt, CHANGE_CONNECTED | (isWired ? CHANGE_BATTERY : 0));
 
         // ClickSync A5 A3 unlock handshake
         if (g_hControlDev != INVALID_HANDLE_VALUE) {
@@ -501,11 +509,11 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                         break;
                     } else if (waitRes == WAIT_OBJECT_0 + 2) {
                         // PnP Debounce: Windows composite device sends multiple arrival messages.
-                        // Drain any consecutive events within 300ms before handling reconnect.
-                        Sleep(300);
+                        // Drain any consecutive events within 600ms before handling reconnect.
+                        Sleep(600);
                         while (WaitForSingleObject(g_hDevChangeEvent, 0) == WAIT_OBJECT_0) {
                             ResetEvent(g_hDevChangeEvent);
-                            Sleep(50);
+                            Sleep(100);
                         }
                         CancelIo(hStatus);
                         break;
@@ -573,9 +581,10 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_CONNECTED;
                 }
 
-                // Real connection mode from the packet device marker
-                if (devStatus.isWired != g_currentState.isWired) {
-                    g_currentState.isWired = devStatus.isWired;
+                // Effective connection mode from endpoint PID or packet device marker
+                bool effWired = isWired || devStatus.isWired;
+                if (effWired != g_currentState.isWired) {
+                    g_currentState.isWired = effWired;
                     mask |= CHANGE_CONNECTED;
                 }
 
@@ -586,10 +595,12 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_DPI;
                 }
 
-                if (devStatus.battery != g_currentState.battery || devStatus.isCharging != g_currentState.isCharging) {
+                bool effCharging = devStatus.isCharging || effWired;
+                if (devStatus.battery != g_currentState.battery || effCharging != g_currentState.isCharging) {
                     g_currentState.battery = devStatus.battery;
-                    g_currentState.isCharging = devStatus.isCharging;
+                    g_currentState.isCharging = effCharging;
                     g_cachedBattery = devStatus.battery;
+                    SaveRegistryDword(L"LastBattery", (DWORD)devStatus.battery);
                     mask |= CHANGE_BATTERY;
                 }
                 copySt = g_currentState;
@@ -635,6 +646,17 @@ bool Start(HWND hNotifyWnd, StateCallback callback) {
 
     InitializeCriticalSection(&g_csDevIO);
     InitializeCriticalSection(&g_csState);
+
+    DWORD savedBat = LoadRegistryDword(L"LastBattery", 100);
+    if (savedBat >= 2 && savedBat <= 100) {
+        g_cachedBattery = (int)savedBat;
+    } else {
+        g_cachedBattery = 100;
+    }
+    EnterCriticalSection(&g_csState);
+    g_currentState.battery = g_cachedBattery;
+    LeaveCriticalSection(&g_csState);
+
     g_hStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     g_hDevChangeEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
 
@@ -707,6 +729,33 @@ bool RefreshPollingRate() {
         return true;
     }
     return false;
+}
+
+void ForceRefresh() {
+    // 1. Actively query hardware polling rate
+    RefreshPollingRate();
+
+    // 2. Send active wake command to trigger hardware status report
+    EnterCriticalSection(&g_csDevIO);
+    if (g_hControlDev != INVALID_HANDLE_VALUE) {
+        BYTE unlockBuf[33] = {0};
+        DWORD uSize = Rapoo::BuildUnlockPacket(unlockBuf, sizeof(unlockBuf));
+        DWORD written = 0;
+        OVERLAPPED uOv = {0};
+        uOv.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        WriteFile(g_hControlDev, unlockBuf, uSize, &written, &uOv);
+        WaitForSingleObject(uOv.hEvent, 100);
+        CloseHandle(uOv.hEvent);
+    }
+    LeaveCriticalSection(&g_csDevIO);
+
+    // 3. Callback with current state
+    EnterCriticalSection(&g_csState);
+    State copySt = g_currentState;
+    LeaveCriticalSection(&g_csState);
+    if (g_callback) {
+        g_callback(copySt, CHANGE_BATTERY | CHANGE_POLLING);
+    }
 }
 
 State GetCurrentState() {

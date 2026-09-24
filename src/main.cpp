@@ -53,18 +53,33 @@ static void RefreshTrayUI(const Device::State& state) {
 static void OnDeviceStateChanged(const Device::State& state, DWORD changeMask) {
     if (!g_hMainWnd) return;
 
-    // Show dynamic OSD on DPI changes
-    if (changeMask & Device::CHANGE_DPI) {
-        Osd::ShowDpiUpdate(
-            state.dpiLevel,
-            state.dpiX,
-            state.dpiY,
-            state.battery,
-            state.pollingHz,
-            state.isCharging,
-            state.isWired,
-            state.modelName
-        );
+    static bool s_prevConnected = false;
+    static bool s_prevWired = false;
+
+    if (state.isConnected) {
+        bool justConnected = !s_prevConnected;
+        bool modeChanged = s_prevConnected && (s_prevWired != state.isWired);
+        bool dpiChanged = (changeMask & Device::CHANGE_DPI) != 0;
+
+        // Auto popup OSD when device is recognized, when mode switches, or on DPI changes
+        if (justConnected || modeChanged || dpiChanged) {
+            Osd::ShowDpiUpdate(
+                state.dpiLevel,
+                state.dpiX,
+                state.dpiY,
+                state.battery,
+                state.pollingHz,
+                state.isCharging,
+                state.isWired,
+                state.modelName
+            );
+        }
+
+        s_prevConnected = true;
+        s_prevWired = state.isWired;
+    } else {
+        s_prevConnected = false;
+        s_prevWired = false;
     }
 
     PostMessageW(g_hMainWnd, WM_APP_STATE_UPDATE, 0, 0);
@@ -80,6 +95,8 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     switch (msg) {
         case WM_APP_TRAYMSG: {
             if (lParam == WM_LBUTTONUP) {
+                // Immediately refresh data from hardware and show fresh OSD
+                Device::ForceRefresh();
                 Device::State st = Device::GetCurrentState();
                 if (st.isConnected) {
                     Osd::ShowDpiUpdate(
@@ -96,6 +113,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     const WCHAR* mName = st.modelName[0] ? st.modelName : L"通用";
                     Osd::Show(mName, L"设备休眠 / 未连接", L"请移动鼠标唤醒或插上 USB 线");
                 }
+                RefreshTrayUI(st);
             } else if (lParam == WM_RBUTTONUP) {
                 SetForegroundWindow(hWnd);
                 Tray::ShowMenu(hWnd);

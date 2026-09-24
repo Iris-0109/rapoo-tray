@@ -33,6 +33,7 @@ void NotifyDeviceChange();
 bool SetPollingRate(int hz);
 bool SetSleepTimeout(int minutes);
 bool RefreshPollingRate();
+void ForceRefresh();
 
 State GetCurrentState();
 
