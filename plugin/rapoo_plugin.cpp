@@ -297,9 +297,9 @@ class CMiniBatteryItem : public IPluginItem {
 public:
     const wchar_t* GetItemName() const override { return L"鼠标电量"; }
     const wchar_t* GetItemId() const override { return L"rapoo_mouse_battery"; }
-    const wchar_t* GetItemLableText() const override;
+    const wchar_t* GetItemLableText() const override { return L""; }
     const wchar_t* GetItemValueText() const override;
-    const wchar_t* GetItemValueSampleText() const override { return L"100%"; }
+    const wchar_t* GetItemValueSampleText() const override { return L"🟢 100%"; }
     bool IsCustomDraw() const override { return false; }
 };
 
@@ -343,9 +343,13 @@ public:
 
         if (connected) {
             if (bat >= 0) {
-                swprintf_s(m_batteryStr, L"%d%%", bat);
+                if (charging) {
+                    swprintf_s(m_batteryStr, L"⚡ %d%%", bat);
+                } else {
+                    swprintf_s(m_batteryStr, L"🟢 %d%%", bat);
+                }
             } else {
-                wcscpy_s(m_batteryStr, L"--");
+                wcscpy_s(m_batteryStr, charging ? L"⚡ --" : L"🟢 --");
             }
 
             if (dpi > 0) {
@@ -411,13 +415,6 @@ private:
 };
 
 static CRapooPlugin g_plugin;
-
-const wchar_t* CMiniBatteryItem::GetItemLableText() const {
-    if (g_isCharging.load()) {
-        return L"⚡ ";
-    }
-    return L"🟢 ";
-}
 
 const wchar_t* CMiniBatteryItem::GetItemValueText() const {
     return g_plugin.GetBatteryText();
