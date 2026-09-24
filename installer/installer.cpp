@@ -183,7 +183,7 @@ static void DoInstall() {
     HKEY hKeyUn;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_UNINSTALL, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKeyUn, NULL) == ERROR_SUCCESS) {
         const WCHAR* name = L"rapoo-tray";
-        const WCHAR* ver = L"1.2.3";
+        const WCHAR* ver = L"1.3.0";
         const WCHAR* pub = L"Iris";
         WCHAR unCmd[MAX_PATH + 32];
         StringCchPrintfW(unCmd, sizeof(unCmd) / sizeof(WCHAR), L"\"%s\" /uninstall", uninstallerPath);

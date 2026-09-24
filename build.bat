@@ -31,12 +31,12 @@ where clang++ >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     set "CLANGXX=clang++"
 )
-if not defined CLANGXX if exist "%ProgramFiles%\LLVM\bin\clang++.exe" (
-    set "CLANGXX=%ProgramFiles%\LLVM\bin\clang++.exe"
+if not defined CLANGXX if exist "D:\VS2022\tool\bin\clang++.exe" (
+    set "CLANGXX=D:\VS2022\tool\bin\clang++.exe"
 )
-if defined CLANGXX if exist "%ProgramFiles%\LLVM\bin\llvm-rc.exe" (
+if defined CLANGXX if exist "D:\VS2022\tool\bin\llvm-rc.exe" (
     echo [Toolchain] Using LLVM Clang++ ...
-    "%ProgramFiles%\LLVM\bin\llvm-rc.exe" /fo bin\app.res res\app.rc
+    "D:\VS2022\tool\bin\llvm-rc.exe" /fo bin\app.res res\app.rc
     "%CLANGXX%" -O3 src\main.cpp src\rapoo_protocol.cpp src\device_manager.cpp src\osd_window.cpp src\tray_menu.cpp src\alert_window.cpp bin\app.res -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32 -luxtheme -Xlinker /SUBSYSTEM:WINDOWS -o bin\rapoo-tray.exe
     if exist bin\app.res del bin\app.res
     goto done
