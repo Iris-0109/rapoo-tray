@@ -79,16 +79,21 @@ void InitTheme() {
 }
 
 static bool IsSystemDarkMode() {
-    if (fnShouldAppsUseDarkMode) return fnShouldAppsUseDarkMode();
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD val = 1, size = sizeof(DWORD), type = 0;
+        // Check SystemUsesLightTheme first since tray popup menus belong to the taskbar/system area
+        if (RegQueryValueExW(hKey, L"SystemUsesLightTheme", NULL, &type, (LPBYTE)&val, &size) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return (val == 0);
+        }
         if (RegQueryValueExW(hKey, L"AppsUseLightTheme", NULL, &type, (LPBYTE)&val, &size) == ERROR_SUCCESS) {
             RegCloseKey(hKey);
             return (val == 0);
         }
         RegCloseKey(hKey);
     }
+    if (fnShouldAppsUseDarkMode) return fnShouldAppsUseDarkMode();
     return false;
 }
 
@@ -115,9 +120,18 @@ static void ApplyModernWindowStyle(HWND hWnd, bool isDark, int w = 0, int h = 0)
 
     if (fnSetWindowCompositionAttribute) {
         ACCENT_POLICY policy = {};
-        policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        policy.AccentFlags = 0; // No DWM system rectangular border (eliminated white streaks)
-        policy.GradientColor = isDark ? 0xCC1A1B20 : 0xD8F8F9FA; // AABBGGRR
+        if (isDark) {
+            policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+            policy.AccentFlags = 0; // No DWM system rectangular border (eliminated white streaks)
+            policy.GradientColor = 0xCC1A1B20; // AABBGGRR
+        } else {
+            // In light mode, disable acrylic blur-behind composition.
+            // Standard GDI rendering leaves Alpha = 0, causing DWM acrylic composition to render as an opaque white wash.
+            // Disabling it restores crisp, solid Win32 GDI rendering with full contrast.
+            policy.AccentState = ACCENT_DISABLED;
+            policy.AccentFlags = 0;
+            policy.GradientColor = 0;
+        }
         WINDOWCOMPOSITIONATTRIBDATA data = { 19, &policy, sizeof(policy) };
         fnSetWindowCompositionAttribute(hWnd, &data);
     }
@@ -416,12 +430,12 @@ static LRESULT CALLBACK AcrylicSubWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             HBITMAP hbm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
             HBITMAP oldBm = (HBITMAP)SelectObject(memDC, hbm);
 
-            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(248, 248, 252);
-            COLORREF borderCol = g_curDark ? RGB(50, 54, 65) : RGB(218, 222, 230);
-            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(228, 232, 242);
-            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(30, 35, 45);
-            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 120, 215);
-            COLORREF mutedCol = g_curDark ? RGB(140, 150, 165) : RGB(120, 130, 145);
+            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(255, 255, 255);
+            COLORREF borderCol = g_curDark ? RGB(50, 54, 65) : RGB(205, 212, 222);
+            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(232, 238, 248);
+            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(20, 24, 32);
+            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 110, 215);
+            COLORREF mutedCol = g_curDark ? RGB(140, 150, 165) : RGB(105, 115, 130);
             COLORREF trackBgCol = g_curDark ? RGB(45, 50, 60) : RGB(215, 220, 230);
 
             HBRUSH bgBrush = CreateSolidBrush(bgCol);
@@ -756,14 +770,14 @@ static LRESULT CALLBACK AcrylicMainWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             HBITMAP hbm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
             HBITMAP oldBm = (HBITMAP)SelectObject(memDC, hbm);
 
-            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(248, 248, 252);
-            COLORREF borderCol = g_curDark ? RGB(50, 54, 65) : RGB(218, 222, 230);
-            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(228, 232, 242);
-            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(30, 35, 45);
-            COLORREF mutedCol = g_curDark ? RGB(155, 165, 180) : RGB(100, 110, 125);
-            COLORREF greenCol = g_curDark ? RGB(34, 197, 94) : RGB(22, 163, 74);
+            COLORREF bgCol = g_curDark ? RGB(24, 26, 32) : RGB(255, 255, 255);
+            COLORREF borderCol = g_curDark ? RGB(50, 54, 65) : RGB(205, 212, 222);
+            COLORREF hoverCol = g_curDark ? RGB(52, 58, 72) : RGB(232, 238, 248);
+            COLORREF textCol = g_curDark ? RGB(235, 240, 248) : RGB(20, 24, 32);
+            COLORREF mutedCol = g_curDark ? RGB(155, 165, 180) : RGB(105, 115, 130);
+            COLORREF greenCol = g_curDark ? RGB(34, 197, 94) : RGB(16, 145, 60);
             COLORREF sepCol = g_curDark ? RGB(40, 44, 54) : RGB(225, 228, 236);
-            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 120, 215);
+            COLORREF checkCol = g_curDark ? RGB(96, 205, 255) : RGB(0, 110, 215);
 
             HBRUSH bgBrush = CreateSolidBrush(bgCol);
             FillRect(memDC, &rc, bgBrush);
@@ -890,7 +904,7 @@ void ShowMenu(HWND hWndOwner) {
 
     MenuItemData itemHeader = { 0 };
     itemHeader.isHeader = true;
-    itemHeader.label = st.modelName[0] ? st.modelName : L"雷柏游戏鼠标";
+    itemHeader.label = st.modelName[0] ? st.modelName : L"通用";
     if (st.isConnected) {
         StringCchCopyW(itemHeader.value, 32, st.isWired ? L"● USB 有线连接 · 已连接" : L"● 2.4G 无线连接 · 已连接");
     } else {
@@ -1452,7 +1466,7 @@ void UpdateTooltip(NOTIFYICONDATAW& nid, const Device::State& state) {
             nid.szTip,
             ARRAYSIZE(nid.szTip),
             L"%s\n设备休眠 / 未连接",
-            state.modelName[0] ? state.modelName : L"雷柏游戏鼠标"
+            state.modelName[0] ? state.modelName : L"通用"
         );
     }
 }

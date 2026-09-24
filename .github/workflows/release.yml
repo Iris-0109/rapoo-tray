@@ -56,4 +56,6 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           files: |
+            bin/rapoo-tray.exe
+            dist/rapoo-tray-setup.exe
             bin/rapoo-plugin.dll

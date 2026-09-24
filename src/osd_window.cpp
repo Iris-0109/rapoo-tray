@@ -276,7 +276,7 @@ void Show(const WCHAR* line1, const WCHAR* line2, const WCHAR* line3) {
 
 void ShowDpiUpdate(int level, int dpix, int dpiy, int battery, int pollingHz, bool isCharging, bool isWired, const WCHAR* modelName) {
     WCHAR l1[64], l2[64], l3[64];
-    const WCHAR* mName = (modelName && modelName[0]) ? modelName : L"雷柏游戏鼠标";
+    const WCHAR* mName = (modelName && modelName[0]) ? modelName : L"通用";
     StringCchPrintfW(l1, ARRAYSIZE(l1), L"%s  DPI %d", mName, dpix);
     StringCchPrintfW(l2, ARRAYSIZE(l2), L"X 轴: %d    Y 轴: %d", dpix, dpiy);
 

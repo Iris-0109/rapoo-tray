@@ -4,7 +4,7 @@
   <p><b>雷柏VT系列游戏鼠标轻量化托盘程序</b></p>
 
   <p>
-    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.2.1-blue?style=flat-square" alt="Release" /></a>
+    <a href="https://github.com/Iris-0109/rapoo-tray/releases"><img src="https://img.shields.io/badge/Release-v1.2.2-blue?style=flat-square" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows" alt="Platform" />
     <img src="https://img.shields.io/badge/Language-C%2B%2B17%20%2F%20Win32-00599C?style=flat-square&logo=c%2B%2B" alt="Language" />
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
@@ -81,14 +81,14 @@
 | **雷柏 VT3S 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1406` / `0x1410` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
 | **雷柏 VT3S 系列** | USB 有线直连 | `0x24AE` | `0x4606` / `0x1411` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
 | **雷柏 VT3 MAX 系列** | 2.4G 无线接收器 | `0x24AE` | `0x1417` | ✅ 社区实测支持（由社区用户 [@sAchNMN](https://github.com/sAchNMN) 提供） | 
-| **雷柏二代游戏鼠标 (未打标机型)** | 2.4G / USB 有线 | `0x24AE` | 通用自动匹配 | 🔑待验证 |
+| **雷柏二代游戏鼠标 (未打标机型)** | 2.4G / USB 有线 | `0x24AE` | 通用自动匹配 | ✅ 自动识别挂载（显示为“通用”） |
 
-### 💡 通用兼容机制与社区贡献指南
+### 💡 通用兼容机制与型号提报指南
 
 1. **二代 Nordic 架构全功能即插即用**：
-   雷柏二代游戏鼠标（基于 Nordic 54L15 / 3950 方案）在底层通信报文协议（UsagePage `0xFF00`、Report ID `0x07` 与控制指令集）上完全统一。即使您的鼠标尚未打标，程序也会自动以 **`雷柏游戏鼠标 (通用)`** 模式挂载运行，**电量读取、DPI 切换、回报率设置与休眠控制均不受任何影响**。
-2. **提交 PR 收录您的型号（仅需 1 行代码）**：
-   插入鼠标后在 PowerShell 中执行以下命令获取真实 PID：
+   雷柏二代游戏鼠标（基于 Nordic 54L15 / 3950 方案）在底层通信报文协议（UsagePage `0xFF00`、Report ID `0x07` 与控制指令集）上完全统一。即使您的鼠标尚未打标，程序也会自动以 **`通用`** 模式挂载运行，**电量读取、DPI 切换、回报率设置与休眠控制均 100% 完整支持**。
+2. **一键提取鼠标硬件 PID 并提交 PR（仅需 1 行代码）**：
+   插入鼠标后，直接双击运行项目根目录下的 **`获取鼠标PID.bat`**（或执行 `tools/get_mouse_pid.ps1`），脚本会自动提取鼠标硬件 PID 并生成代码片段复制到剪贴板；也可在 PowerShell 中手动执行：
    ```powershell
    Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like "*24AE*" } | Select-Object FriendlyName, InstanceId
    ```

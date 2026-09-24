@@ -62,7 +62,7 @@ static std::atomic<int>  g_dpi{ 0 };
 static std::atomic<int>  g_dpiLevel{ 0 };
 static std::atomic<bool> g_connected{ false };
 
-static WCHAR g_curModelName[64] = L"雷柏无线鼠标";
+static WCHAR g_curModelName[64] = L"通用";
 static WCHAR g_curModeName[32] = L"未连接";
 
 // Dynamic device path scanner with generic fallback (single-pass enumeration)
@@ -133,7 +133,7 @@ static bool FindRapooDevicePath(WCHAR* outPath, DWORD maxLen, WCHAR* outModel, D
                                     }
                                     if (!matched) {
                                         bool isWired = (wcsstr(lowerPath, L"pid_46") || wcsstr(lowerPath, L"pid_1411"));
-                                        if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"雷柏游戏鼠标 (通用)");
+                                        if (outModel && maxModelLen > 0) StringCchCopyW(outModel, maxModelLen, L"通用");
                                         if (outMode && maxModeLen > 0) StringCchCopyW(outMode, maxModeLen, isWired ? L"USB有线模式" : L"2.4G无线模式");
                                     }
                                     found = true;

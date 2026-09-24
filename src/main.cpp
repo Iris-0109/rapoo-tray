@@ -88,7 +88,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                         st.modelName
                     );
                 } else {
-                    const WCHAR* mName = st.modelName[0] ? st.modelName : L"雷柏游戏鼠标";
+                    const WCHAR* mName = st.modelName[0] ? st.modelName : L"通用";
                     Osd::Show(mName, L"设备休眠 / 未连接", L"请移动鼠标唤醒或插上 USB 线");
                 }
             } else if (lParam == WM_RBUTTONUP) {

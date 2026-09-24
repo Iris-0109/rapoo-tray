@@ -1,18 +1,25 @@
-## 🚀 rapoo-tray v1.2.1 发行说明 (Release Notes)
+## 🚀 rapoo-tray v1.2.2 发行说明 (Release Notes)
 
-rapoo-tray v1.2.1 正式发布官方 TrafficMonitor 扩展插件（`rapoo-plugin.dll`），并将项目版本号迭代至 1.2.1。本版本核心更新内容如下：
+rapoo-tray v1.2.2 重点修复了 Windows 系统浅色模式下的托盘菜单视觉对比度问题，精简了通用未打标机型的显示布局以优化 OSD 浮窗尺寸，并新增了便捷的硬件 PID 提取辅助工具。
 
-### 一、新增 TrafficMonitor 扩展插件 (`rapoo-plugin.dll`)
-1. **监控集成**：基于 TrafficMonitor 插件接口规范（`ITMPlugin API v8`）原生开发，支持在 TrafficMonitor 任务栏窗口与主悬浮窗中直接显示雷柏鼠标的实时运行状态。
-2. **状态项目**：
-   - **鼠标电量** (`rapoo_mouse_battery`)：实时显示电量百分比（例如：`85%`），充电时自动附带 `⚡` 符号（例如：`⚡85%`）。
-   - **鼠标 DPI** (`rapoo_mouse_dpi`)：实时显示当前档位对应 DPI 数值（例如：`800`）。
-3. **详细信息提示 (Tooltip)**：鼠标指针悬停于监控项时，弹出包含设备具体型号、当前连接模式（2.4G 无线 / USB 有线）、详细电量（含充电状态）与当前 DPI 档位索引的提示信息。
-4. **双模热插拔**：采用非阻塞重叠 I/O（Overlapped I/O）后台轮询监听，支持 2.4G 无线接收器与 USB 有线直连双模自动识别与无感切换。
-5. **设备支持范围**：与主程序一致，原生支持雷柏 VT7 系列、VT3S 系列、VT3 MAX 系列以及二代 Nordic 架构通用机型。
-6. **原生低耗**：纯 Win32 C++ 静态链接构建，DLL 体积仅约 28 KB，常驻内存占用小于 1 MB，CPU 占用趋近 0.0%。
+### 一、浅色主题渲染修复与高对比度适配 (Light Mode Rendering Fix)
+1. **任务栏主题精准对齐**：优先读取注册表 `SystemUsesLightTheme`，解决“系统任务栏设为浅色但全局应用为深色”时的模式误判问题。
+2. **根除 DWM 亚克力白雾冲淡**：在浅色模式下停用 DWM 亚克力像素合成（`ACCENT_DISABLED`），规避 GDI Alpha 通道与 DWM 混叠引起的文字泛白及透明漂白现象。
+3. **重构浅色色彩系统**：
+   - 菜单背景：纯白 (`#FFFFFF`)
+   - 边框描边：浅灰 (`#CDD4DE`)
+   - 主菜单文本：高对比度墨黑 (`#141820`)
+   - 交互悬停态：淡雅蓝灰 (`#E8EEF8`)
+   - 激活与选中指示：Win11 强调蓝 (`#006ED7`)
 
-### 二、工程架构与持续集成升级
-1. **自动化流水线升级**：更新 GitHub Actions CI/CD 流水线，在发布新版本时自动编译并随 Release 附件分发 `rapoo-plugin.dll`。
-2. **插件独立编译脚本**：提供 `plugin/build_plugin.bat`，支持本地 MinGW 工具链一键构建插件 DLL。
-3. **版本号同步对齐**：主程序（`rapoo-tray.exe`）与安装向导（`rapoo-tray-setup.exe`）元数据版本号同步升级至 1.2.1.0。
+### 二、未打标机型标识精简 (Generic Fallback Display Streamlining)
+1. **紧凑化型号显示**：二代 Nordic 架构未打标/未识别机型的兜底显示名称由 `雷柏游戏鼠标 (通用)` 精简为 **`通用`**。
+2. **OSD 浮窗尺寸优化**：彻底消除因冗长机型名称导致 DPI 切换 OSD 悬浮卡片被横向拉宽的问题，恢复最紧凑精致的视觉布局。
+3. **全端同步**：托盘右键菜单、托盘气泡提示、屏幕 OSD 及 TrafficMonitor 监控插件同步更新。
+
+### 三、硬件 PID 提取辅助工具 (Hardware PID Tool)
+1. **一键提取与复制**：项目根目录新增 `获取鼠标PID.bat` 与 `tools/get_mouse_pid.ps1`。用户插入鼠标后双击脚本，即可自动探测雷柏设备（VID `0x24AE`）的硬件 PID，生成 PR 代码片段并自动复制到剪贴板。
+2. **降低社区贡献门槛**：方便非技术用户快速反馈设备信息，加速雷柏全系列机型收录。
+
+### 四、组件版本同步
+- 主程序 `rapoo-tray.exe`、安装程序 `rapoo-tray-setup.exe` 及 TrafficMonitor 扩展插件 `rapoo-plugin.dll` 同步升级至 v1.2.2。

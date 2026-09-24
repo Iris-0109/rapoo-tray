@@ -154,7 +154,7 @@ static void ResolveRapooModelName(const WCHAR* targetPid, WCHAR* outModel, DWORD
     }
 
     // 通用类兜底：兼容所有雷柏二代 Nordic 架构 (54L15/3950) 未打标机型
-    StringCchCopyW(outModel, maxModelLen, L"雷柏游戏鼠标 (通用)");
+    StringCchCopyW(outModel, maxModelLen, L"通用");
 }
 
 static bool FindRapooEndpoints(WCHAR* pathStatus, WCHAR* pathControl, WCHAR* pathFeature, WCHAR* outModel, DWORD maxModelLen, bool* outIsWired) {
