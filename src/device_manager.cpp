@@ -453,6 +453,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
         g_currentState.isWired = isWired;
+        g_currentState.isCharging = isWired;
         g_currentState.isConnected = true;
         State connSt = g_currentState;
         LeaveCriticalSection(&g_csState);
