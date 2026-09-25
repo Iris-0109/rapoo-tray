@@ -453,9 +453,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
         g_currentState.isWired = isWired;
-        if (isWired) {
-            g_currentState.isCharging = true;
-        }
+        g_currentState.isCharging = isWired;
         g_currentState.isConnected = true;
         State connSt = g_currentState;
         LeaveCriticalSection(&g_csState);
@@ -498,6 +496,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         BYTE buf[65] = {0};
         DWORD bytesRead = 0;
         bool gotFirstPacket = false; // no ping-alive judgement until mode is known
+        int failedPingCount = 0;
 
         while (WaitForSingleObject(g_hStopEvent, 0) == WAIT_TIMEOUT) {
             ResetEvent(hReadEvent);
@@ -539,14 +538,18 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                                 int hz = 0;
                                 bool alive = PingDevice(hz);
                                 if (!alive) {
-                                    EnterCriticalSection(&g_csState);
-                                    bool wasConn = g_currentState.isConnected;
-                                    g_currentState.isConnected = false;
-                                    g_currentState.isCharging = false;
-                                    State copySt = g_currentState;
-                                    LeaveCriticalSection(&g_csState);
-                                    if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
+                                    ++failedPingCount;
+                                    if (failedPingCount >= 2) {
+                                        EnterCriticalSection(&g_csState);
+                                        bool wasConn = g_currentState.isConnected;
+                                        g_currentState.isConnected = false;
+                                        g_currentState.isCharging = false;
+                                        State copySt = g_currentState;
+                                        LeaveCriticalSection(&g_csState);
+                                        if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
+                                    }
                                 } else {
+                                    failedPingCount = 0;
                                     EnterCriticalSection(&g_csState);
                                     bool wasConn = g_currentState.isConnected;
                                     g_currentState.isConnected = true;
@@ -574,6 +577,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             Rapoo::DeviceStatus devStatus;
             if (Rapoo::ParseStatusReport(buf, bytesRead, devStatus, g_cachedBattery)) {
                 gotFirstPacket = true;
+                failedPingCount = 0;
                 // NOTE: wired USB direct connect does NOT imply charging.
                 // Trust the protocol-level charging flag for all modes.
 
@@ -586,8 +590,9 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_CONNECTED;
                 }
 
-                // Effective connection mode from endpoint PID or packet device marker
-                bool effWired = isWired || devStatus.isWired;
+                // Connection mode comes from the endpoint PID. The status packet's
+                // device marker is not reliable for every receiver model.
+                bool effWired = isWired;
                 if (effWired != g_currentState.isWired) {
                     g_currentState.isWired = effWired;
                     mask |= CHANGE_CONNECTED;
@@ -600,7 +605,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_DPI;
                 }
 
-                bool effCharging = devStatus.isCharging || effWired;
+                bool effCharging = devStatus.isCharging;
                 if (devStatus.battery != g_currentState.battery || effCharging != g_currentState.isCharging) {
                     g_currentState.battery = devStatus.battery;
                     g_currentState.isCharging = effCharging;
