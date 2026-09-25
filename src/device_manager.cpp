@@ -496,6 +496,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         BYTE buf[65] = {0};
         DWORD bytesRead = 0;
         bool gotFirstPacket = false; // no ping-alive judgement until mode is known
+        int failedPingCount = 0;
 
         while (WaitForSingleObject(g_hStopEvent, 0) == WAIT_TIMEOUT) {
             ResetEvent(hReadEvent);
@@ -537,14 +538,18 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                                 int hz = 0;
                                 bool alive = PingDevice(hz);
                                 if (!alive) {
-                                    EnterCriticalSection(&g_csState);
-                                    bool wasConn = g_currentState.isConnected;
-                                    g_currentState.isConnected = false;
-                                    g_currentState.isCharging = false;
-                                    State copySt = g_currentState;
-                                    LeaveCriticalSection(&g_csState);
-                                    if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
+                                    ++failedPingCount;
+                                    if (failedPingCount >= 2) {
+                                        EnterCriticalSection(&g_csState);
+                                        bool wasConn = g_currentState.isConnected;
+                                        g_currentState.isConnected = false;
+                                        g_currentState.isCharging = false;
+                                        State copySt = g_currentState;
+                                        LeaveCriticalSection(&g_csState);
+                                        if (wasConn && g_callback) g_callback(copySt, CHANGE_CONNECTED | CHANGE_BATTERY);
+                                    }
                                 } else {
+                                    failedPingCount = 0;
                                     EnterCriticalSection(&g_csState);
                                     bool wasConn = g_currentState.isConnected;
                                     g_currentState.isConnected = true;
@@ -572,6 +577,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
             Rapoo::DeviceStatus devStatus;
             if (Rapoo::ParseStatusReport(buf, bytesRead, devStatus, g_cachedBattery)) {
                 gotFirstPacket = true;
+                failedPingCount = 0;
                 // NOTE: wired USB direct connect does NOT imply charging.
                 // Trust the protocol-level charging flag for all modes.
 
