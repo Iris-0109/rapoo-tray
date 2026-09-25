@@ -453,9 +453,6 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
         EnterCriticalSection(&g_csState);
         StringCchCopyW(g_currentState.modelName, ARRAYSIZE(g_currentState.modelName), modelBuf);
         g_currentState.isWired = isWired;
-        if (isWired) {
-            g_currentState.isCharging = true;
-        }
         g_currentState.isConnected = true;
         State connSt = g_currentState;
         LeaveCriticalSection(&g_csState);
@@ -586,8 +583,9 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_CONNECTED;
                 }
 
-                // Effective connection mode from endpoint PID or packet device marker
-                bool effWired = isWired || devStatus.isWired;
+                // Connection mode comes from the endpoint PID. The status packet's
+                // device marker is not reliable for every receiver model.
+                bool effWired = isWired;
                 if (effWired != g_currentState.isWired) {
                     g_currentState.isWired = effWired;
                     mask |= CHANGE_CONNECTED;
@@ -600,7 +598,7 @@ static DWORD WINAPI HidWorkerThread(LPVOID lpParam) {
                     mask |= CHANGE_DPI;
                 }
 
-                bool effCharging = devStatus.isCharging || effWired;
+                bool effCharging = devStatus.isCharging;
                 if (devStatus.battery != g_currentState.battery || effCharging != g_currentState.isCharging) {
                     g_currentState.battery = devStatus.battery;
                     g_currentState.isCharging = effCharging;
