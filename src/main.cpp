@@ -85,6 +85,27 @@ static void OnDeviceStateChanged(const Device::State& state, DWORD changeMask) {
     PostMessageW(g_hMainWnd, WM_APP_STATE_UPDATE, 0, 0);
 }
 
+static bool IsRapooHidDeviceEvent(WPARAM wParam, LPARAM lParam) {
+    if (wParam != DBT_DEVICEARRIVAL && wParam != DBT_DEVICEREMOVECOMPLETE) {
+        return false;
+    }
+    if (!lParam) {
+        return false;
+    }
+
+    const auto* dev = reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lParam);
+    if (dev->dbcc_size == 0 || dev->dbcc_devicetype != DBT_DEVTYP_DEVICEINTERFACE) {
+        return false;
+    }
+
+    const WCHAR* path = dev->dbcc_name;
+    if (!path || !path[0]) {
+        return false;
+    }
+
+    return wcsstr(path, L"VID_24AE") != nullptr;
+}
+
 static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == g_uTaskbarRestartMsg) {
         Shell_NotifyIconW(NIM_ADD, &g_nid);
@@ -137,7 +158,7 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         case WM_DEVICECHANGE: {
-            if (wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE || wParam == DBT_DEVNODES_CHANGED) {
+            if (IsRapooHidDeviceEvent(wParam, lParam)) {
                 Device::NotifyDeviceChange();
             }
             return 0;
