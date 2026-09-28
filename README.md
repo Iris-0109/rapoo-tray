@@ -80,6 +80,8 @@
 | **雷柏 VT7 V2标准版** | USB 有线直连 | `0x24AE` | `0x4660` | ✅ 开发者实测支持 |
 | **雷柏 VT3S** | 2.4G 无线接收器 | `0x24AE` | `0x1406` / `0x1410` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
 | **雷柏 VT3S** | USB 有线直连 | `0x24AE` | `0x4606` / `0x1411` | ✅ 社区实测支持（由社区用户 [@hsb689](https://github.com/hsb689) 提供） |
+| **雷柏 VT3S V2** | 2.4G 无线接收器 | `0x24AE` | `0x1464` | ✅ 社区实测支持（由社区用户 [@tljsj](https://github.com/tljsj) 提供） | 
+| **雷柏 VT3S V2** | USB 有线直连 | `0x24AE` | `0x4664` | ✅ 社区实测支持（由社区用户 [@tljsj](https://github.com/tljsj) 提供） | 
 | **雷柏 VT3 MAX** | 2.4G 无线接收器 | `0x24AE` | `0x1417` | ✅ 社区实测支持（由社区用户 [@sAchNMN](https://github.com/sAchNMN) 提供） | 
 | **雷柏 VT3 V2标准版** | 2.4G 无线接收器 | `0x24AE` | `0x1412` | ✅ 社区实测支持（由社区用户 [@lbyisme](https://github.com/lbyisme) 提供） | 
 | **雷柏 VT3 V2标准版** | USB 有线直连 | `0x24AE` | `0x4612` | ✅ 社区实测支持（由社区用户 [@lbyisme](https://github.com/lbyisme) 提供） | 

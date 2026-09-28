@@ -142,6 +142,10 @@ static const RapooModelEntry VERIFIED_MODELS[] = {
     { L"1411", L"雷柏 VT3S" },
     { L"4611", L"雷柏 VT3S" },
 
+    // 雷柏 VT3S V2 系列 (实测已验证: 2.4G 接收器 0x1464 / USB 有线 0x4664)
+    { L"1464", L"雷柏 VT3S V2" },
+    { L"4664", L"雷柏 VT3S V2" },
+
     // 雷柏 VT3 系列 (实测已验证)
     { L"1412", L"雷柏 VT3" },
     { L"4612", L"雷柏 VT3" },
